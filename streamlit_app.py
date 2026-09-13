@@ -19,20 +19,6 @@ Dependencies (requirements.txt):
     google-genai
     streamlit-webrtc
     av
-
-Cara menjalankan lokal:
-    streamlit run streamlit_app.py
-
-Environment variable yang dibutuhkan:
-    GEMINI_API_KEY  -> API key dari Google AI Studio (https://aistudio.google.com/apikey)
-    (Di Streamlit Cloud, set ini lewat menu "Secrets": GEMINI_API_KEY = "xxxx")
-
-Catatan tentang mode LIVE (real-time):
-    Mode ini menggunakan WebRTC untuk streaming video langsung dari browser
-    ke server. Di beberapa jaringan (firewall ketat/kantor/kampus), koneksi
-    WebRTC bisa gagal karena butuh server TURN. Jika mode LIVE tidak
-    menampilkan video, gunakan mode "Upload Gambar" atau "Snapshot" sebagai
-    alternatif yang lebih stabil.
 """
 
 import os
@@ -106,12 +92,12 @@ def tambah_ke_riwayat(role, text):
 # ============================================================
 # SETUP GEMINI CLIENT
 # ============================================================
-def get_client():
-    api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
+def get_client(manual_api_key=None):
+    api_key = manual_api_key or os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
     if not api_key:
         st.error(
-            "GEMINI_API_KEY belum diatur. Tambahkan di Streamlit Secrets "
-            "atau environment variable sebelum menjalankan aplikasi."
+            "⚠️ GEMINI_API_KEY belum diatur. Masukkan API Key di sidebar, "
+            "atau atur melalui Streamlit Secrets / Environment Variable."
         )
         st.stop()
     return genai.Client(api_key=api_key)
@@ -142,11 +128,20 @@ if WEBRTC_TERSEDIA:
 
 with st.sidebar:
     st.header("⚙️ Pengaturan")
+    
+    # Input opsional jika API Key belum dipasang di Secrets
+    api_key_input = st.text_input(
+        "Gemini API Key (Opsional)", 
+        type="password", 
+        help="Kosongkan jika sudah diatur di Streamlit Secrets"
+    )
+    
     mode = st.radio("Mode Input Kamera", opsi_mode, index=0)
 
+    # Menggunakan nama model Gemini resmi yang stabil
     model_name = st.selectbox(
         "Model Gemini",
-        ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"],
+        ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
         index=0,
     )
 
@@ -205,8 +200,7 @@ def proses_gambar_opencv(image_bytes: bytes) -> np.ndarray:
 
 
 def deteksi_tepi(frame: np.ndarray) -> np.ndarray:
-    """Contoh pemrosesan sederhana: deteksi tepi (edge detection) untuk
-    menyorot marka jalan / objek di sekitar."""
+    """Deteksi tepi (edge detection) untuk menyorot marka jalan / objek di sekitar."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
@@ -229,7 +223,6 @@ def hash_gambar(image_bytes: bytes) -> str:
 
 # ============================================================
 # MODEL HELM VIRTUAL (AR) — desain orisinal, digambar lewat kode
-# (bukan replika karakter berhak cipta apa pun)
 # ============================================================
 @st.cache_resource
 def muat_deteksi_wajah():
@@ -239,11 +232,7 @@ def muat_deteksi_wajah():
 
 
 def buat_model_helm_virtual(lebar: int, tinggi: int) -> np.ndarray:
-    """
-    Menggambar model helm virtual futuristik (BGRA, dengan transparansi)
-    secara prosedural memakai OpenCV — desain orisinal bergaya sci-fi/HUD,
-    bukan tiruan karakter waralaba manapun.
-    """
+    """Menggambar model helm virtual futuristik (BGRA, dengan transparansi) secara prosedural."""
     kanvas = np.zeros((tinggi, lebar, 4), dtype=np.uint8)
 
     pusat_x, pusat_y = lebar // 2, int(tinggi * 0.48)
@@ -254,10 +243,10 @@ def buat_model_helm_virtual(lebar: int, tinggi: int) -> np.ndarray:
     warna_visor = (235, 200, 40, 255)     # cyan-biru menyala
     warna_garis = (60, 60, 60, 255)       # abu gelap untuk garis panel
 
-    # --- Bentuk dasar helm (oval penuh menutup wajah) ---
+    # Bentuk dasar helm
     cv2.ellipse(kanvas, (pusat_x, pusat_y), (sumbu_x, sumbu_y), 0, 0, 360, warna_utama, -1)
 
-    # --- Panel aksen di dahi ---
+    # Panel aksen dahi
     titik_dahi = np.array([
         [pusat_x - int(sumbu_x * 0.55), pusat_y - int(sumbu_y * 0.55)],
         [pusat_x + int(sumbu_x * 0.55), pusat_y - int(sumbu_y * 0.55)],
@@ -266,20 +255,20 @@ def buat_model_helm_virtual(lebar: int, tinggi: int) -> np.ndarray:
     ], dtype=np.int32)
     cv2.fillPoly(kanvas, [titik_dahi], warna_aksen)
 
-    # --- Visor / kaca mata menyala (garis horizontal melengkung) ---
+    # Visor
     cv2.ellipse(
         kanvas, (pusat_x, int(pusat_y - sumbu_y * 0.05)),
         (int(sumbu_x * 0.62), int(sumbu_y * 0.22)),
         0, 200, 340, warna_visor, thickness=max(3, lebar // 40),
     )
 
-    # --- Garis-garis panel HUD di sisi kanan-kiri ---
+    # Panel samping
     for dx in (-1, 1):
         titik_awal = (pusat_x + dx * int(sumbu_x * 0.75), pusat_y)
         titik_akhir = (pusat_x + dx * int(sumbu_x * 0.95), pusat_y + int(sumbu_y * 0.3))
         cv2.line(kanvas, titik_awal, titik_akhir, warna_garis, thickness=max(2, lebar // 80))
 
-    # --- Pelindung dagu ---
+    # Pelindung dagu
     titik_dagu = np.array([
         [pusat_x - int(sumbu_x * 0.45), pusat_y + int(sumbu_y * 0.55)],
         [pusat_x + int(sumbu_x * 0.45), pusat_y + int(sumbu_y * 0.55)],
@@ -287,7 +276,7 @@ def buat_model_helm_virtual(lebar: int, tinggi: int) -> np.ndarray:
     ], dtype=np.int32)
     cv2.fillPoly(kanvas, [titik_dagu], warna_aksen)
 
-    # --- Haluskan tepi transparansi (anti-aliasing sederhana) ---
+    # Alpha anti-aliasing
     alpha = kanvas[:, :, 3].astype(np.float32) / 255.0
     alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
     kanvas[:, :, 3] = (alpha * 255).astype(np.uint8)
@@ -296,7 +285,7 @@ def buat_model_helm_virtual(lebar: int, tinggi: int) -> np.ndarray:
 
 
 def tempelkan_overlay_bgra(frame_bgr: np.ndarray, overlay_bgra: np.ndarray, x: int, y: int) -> np.ndarray:
-    """Alpha-blend gambar BGRA (overlay_bgra) ke atas frame_bgr pada posisi (x, y)."""
+    """Alpha-blend gambar BGRA ke atas frame_bgr."""
     h_ov, w_ov = overlay_bgra.shape[:2]
     h_frame, w_frame = frame_bgr.shape[:2]
 
@@ -362,7 +351,7 @@ def analisis_gambar_dengan_ai(client, image_bytes: bytes, pertanyaan: str, model
 
 
 def tanya_jawab_teks(client, pertanyaan: str, model: str) -> str:
-    """Mode tanya-jawab teks biasa tanpa gambar (misal: 'jam berapa sebaiknya istirahat')."""
+    """Mode tanya-jawab teks biasa tanpa gambar."""
     prompt = (
         "Kamu adalah JARVIS, asisten virtual pribadi untuk pengendara motor. "
         "Jawab pertanyaan berikut secara singkat dan jelas dalam Bahasa Indonesia.\n\n"
@@ -374,7 +363,7 @@ def tanya_jawab_teks(client, pertanyaan: str, model: str) -> str:
 
 def jalankan_analisis(image_bytes: bytes, label_user: str = "[Analisis gambar kamera]"):
     """Helper terpusat: proses gambar, panggil AI, simpan ke riwayat."""
-    client = get_client()
+    client = get_client(api_key_input)
     frame = proses_gambar_opencv(image_bytes)
     st.session_state.last_frame = frame
     jpeg_bytes = frame_ke_bytes(frame)
@@ -384,7 +373,7 @@ def jalankan_analisis(image_bytes: bytes, label_user: str = "[Analisis gambar ka
 
 
 # ============================================================
-# WEBRTC: PENYIMPANAN FRAME TERBARU (thread-safe sederhana)
+# WEBRTC: PENYIMPANAN FRAME TERBARU
 # ============================================================
 class PenampungFrame:
     def __init__(self):
@@ -418,7 +407,7 @@ penampung.set_pasang_helm(pasang_helm)
 
 def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
-    penampung.set_frame(img)  # simpan frame ASLI (tanpa overlay) untuk analisis AI
+    penampung.set_frame(img)
 
     if penampung.get_pasang_helm():
         img_tampil = pasang_helm_virtual_ke_wajah(img)
@@ -467,7 +456,7 @@ with kolom_kamera:
         )
         frame_live = penampung.get_frame()
         if frame_live is not None:
-            st.session_state.last_frame = frame_live  # frame ASLI (dipakai untuk analisis AI)
+            st.session_state.last_frame = frame_live
             image_bytes = frame_ke_bytes(frame_live)
             st.caption(
                 "Preview di atas sudah menampilkan model helm virtual secara langsung "
@@ -476,7 +465,7 @@ with kolom_kamera:
                 "Frame terakhir dari LIVE stream."
             )
 
-    # ---------- Tampilkan gambar (untuk mode Upload / Snapshot) ----------
+    # Tampilkan gambar (untuk mode Upload / Snapshot)
     if mode != "LIVE (Real-time Streaming)":
         if image_bytes:
             frame = proses_gambar_opencv(image_bytes)
@@ -500,7 +489,7 @@ with kolom_kamera:
         else:
             st.info("Belum ada gambar. Upload atau ambil snapshot dari kamera dulu.")
 
-    # ---------- Deteksi apakah ini gambar/frame BARU ----------
+    # Deteksi gambar BARU
     if image_bytes:
         h = hash_gambar(image_bytes)
         if h != st.session_state.hash_gambar_terakhir:
@@ -518,7 +507,6 @@ with kolom_kamera:
         perlu_analisis = True
     elif auto_analisis and image_bytes:
         if mode == "LIVE (Real-time Streaming)":
-            # untuk LIVE, batasi frekuensi biar tidak spam API
             sekarang = time.time()
             if sekarang - st.session_state.waktu_auto_terakhir >= interval_auto:
                 perlu_analisis = True
@@ -534,8 +522,6 @@ with kolom_kamera:
                 st.error(f"Gagal menganalisis gambar: {e}")
         st.rerun()
 
-    # Auto-refresh halaman saat mode LIVE + auto-analisis aktif,
-    # supaya frame terbaru terus dicek secara berkala.
     if mode == "LIVE (Real-time Streaming)" and auto_analisis:
         time.sleep(1)
         st.rerun()
@@ -556,7 +542,7 @@ with kolom_chat:
     pertanyaan = st.chat_input("Tanya sesuatu ke JARVIS, atau tanya soal gambar di kiri...")
 
     if pertanyaan:
-        client = get_client()
+        client = get_client(api_key_input)
         tambah_ke_riwayat("user", pertanyaan)
 
         with st.spinner("JARVIS sedang berpikir..."):

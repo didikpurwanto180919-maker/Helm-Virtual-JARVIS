@@ -50,12 +50,12 @@ with st.sidebar:
         help="Gunakan API Key dari akun Google lain jika key utama kehabisan kuota."
     )
     
-    # PERBAIKAN: Default ke gemini-1.5-flash untuk kuota gratis yang jauh lebih besar
+    # PERBAIKAN: Gunakan model aktif yang terbukti didukung SDK google-genai
     model_name = st.selectbox(
         "Model Gemini AI",
-        ["gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash", "gemini-3.6-flash"],
+        ["gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-3.6-flash"],
         index=0,
-        help="Pilih gemini-1.5-flash untuk batas kuota gratis terbanyak."
+        help="Pilih gemini-2.5-flash atau gemini-2.0-flash-lite untuk kestabilan kuota."
     )
     
     st.markdown("---")
@@ -160,7 +160,6 @@ def panggil_gemini_api(api_key, backup_key, selected_model, contents, config):
     
     for key in keys_to_try:
         client = genai.Client(api_key=key)
-        # Mencoba hingga 3 kali jika ada rate limit sementara
         for attempt in range(3):
             try:
                 res = client.models.generate_content(
@@ -172,18 +171,17 @@ def panggil_gemini_api(api_key, backup_key, selected_model, contents, config):
             except APIError as e:
                 if e.code == 429:
                     if attempt < 2:
-                        time.sleep(3) # Tunggu 3 detik lalu coba lagi
+                        time.sleep(3)
                         continue
-                    # Jika sudah 3x mencoba pada key ini, lanjut ke key cadangan (jika ada)
                     break
                 else:
                     raise e
             except Exception as e:
                 raise e
                 
-    raise APIError(429, {"message": "Batas kuota gratis (429) tercapai di semua API Key. Harap tunggu 1 menit atau ganti model ke gemini-1.5-flash di sidebar."})
+    raise APIError(429, {"message": "Batas kuota gratis (429) tercapai di semua API Key. Harap tunggu 1 menit atau pilih gemini-2.5-flash di sidebar."})
 
-# --- LAYOUT UTAMA STREMLIT ---
+# --- LAYOUT UTAMA STREAMLIT ---
 st.title("🪖 H.E.L.M. Visor System - Virtual Overlay")
 
 col_kamera, col_chat = st.columns([1.1, 0.9])
@@ -294,7 +292,7 @@ with col_chat:
 
             except APIError as e:
                 if e.code == 429:
-                    st.warning("⚠️ **Limit Kuota Terlampaui (429):** Pilih model **gemini-1.5-flash** di sidebar atau tunggu 1 menit.")
+                    st.warning("⚠️ **Limit Kuota Terlampaui (429):** Pilih model **gemini-2.5-flash** di sidebar atau tunggu 1 menit.")
                 else:
                     st.error(f"Error API ({e.code}): {e.message}")
             except Exception as e:

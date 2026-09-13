@@ -151,6 +151,13 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    pasang_helm = st.checkbox(
+        "🪖 Pasang Model Helm Virtual (AR)",
+        value=False,
+        help="Mendeteksi wajah dan menampilkan model helm virtual futuristik di atasnya (desain orisinal, real-time).",
+    )
+
+    st.markdown("---")
     auto_analisis = st.checkbox(
         "🤖 Auto-analisis (tanpa klik tombol)",
         value=False,
@@ -221,6 +228,117 @@ def hash_gambar(image_bytes: bytes) -> str:
 
 
 # ============================================================
+# MODEL HELM VIRTUAL (AR) — desain orisinal, digambar lewat kode
+# (bukan replika karakter berhak cipta apa pun)
+# ============================================================
+@st.cache_resource
+def muat_deteksi_wajah():
+    """Muat model deteksi wajah bawaan OpenCV (Haar Cascade)."""
+    path_cascade = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    return cv2.CascadeClassifier(path_cascade)
+
+
+def buat_model_helm_virtual(lebar: int, tinggi: int) -> np.ndarray:
+    """
+    Menggambar model helm virtual futuristik (BGRA, dengan transparansi)
+    secara prosedural memakai OpenCV — desain orisinal bergaya sci-fi/HUD,
+    bukan tiruan karakter waralaba manapun.
+    """
+    kanvas = np.zeros((tinggi, lebar, 4), dtype=np.uint8)
+
+    pusat_x, pusat_y = lebar // 2, int(tinggi * 0.48)
+    sumbu_x, sumbu_y = int(lebar * 0.46), int(tinggi * 0.46)
+
+    warna_utama = (30, 30, 200, 255)      # merah metalik (BGR + alpha)
+    warna_aksen = (40, 170, 235, 255)     # emas/oranye
+    warna_visor = (235, 200, 40, 255)     # cyan-biru menyala
+    warna_garis = (60, 60, 60, 255)       # abu gelap untuk garis panel
+
+    # --- Bentuk dasar helm (oval penuh menutup wajah) ---
+    cv2.ellipse(kanvas, (pusat_x, pusat_y), (sumbu_x, sumbu_y), 0, 0, 360, warna_utama, -1)
+
+    # --- Panel aksen di dahi ---
+    titik_dahi = np.array([
+        [pusat_x - int(sumbu_x * 0.55), pusat_y - int(sumbu_y * 0.55)],
+        [pusat_x + int(sumbu_x * 0.55), pusat_y - int(sumbu_y * 0.55)],
+        [pusat_x + int(sumbu_x * 0.30), pusat_y - int(sumbu_y * 0.85)],
+        [pusat_x - int(sumbu_x * 0.30), pusat_y - int(sumbu_y * 0.85)],
+    ], dtype=np.int32)
+    cv2.fillPoly(kanvas, [titik_dahi], warna_aksen)
+
+    # --- Visor / kaca mata menyala (garis horizontal melengkung) ---
+    cv2.ellipse(
+        kanvas, (pusat_x, int(pusat_y - sumbu_y * 0.05)),
+        (int(sumbu_x * 0.62), int(sumbu_y * 0.22)),
+        0, 200, 340, warna_visor, thickness=max(3, lebar // 40),
+    )
+
+    # --- Garis-garis panel HUD di sisi kanan-kiri ---
+    for dx in (-1, 1):
+        titik_awal = (pusat_x + dx * int(sumbu_x * 0.75), pusat_y)
+        titik_akhir = (pusat_x + dx * int(sumbu_x * 0.95), pusat_y + int(sumbu_y * 0.3))
+        cv2.line(kanvas, titik_awal, titik_akhir, warna_garis, thickness=max(2, lebar // 80))
+
+    # --- Pelindung dagu ---
+    titik_dagu = np.array([
+        [pusat_x - int(sumbu_x * 0.45), pusat_y + int(sumbu_y * 0.55)],
+        [pusat_x + int(sumbu_x * 0.45), pusat_y + int(sumbu_y * 0.55)],
+        [pusat_x, pusat_y + int(sumbu_y * 0.98)],
+    ], dtype=np.int32)
+    cv2.fillPoly(kanvas, [titik_dagu], warna_aksen)
+
+    # --- Haluskan tepi transparansi (anti-aliasing sederhana) ---
+    alpha = kanvas[:, :, 3].astype(np.float32) / 255.0
+    alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
+    kanvas[:, :, 3] = (alpha * 255).astype(np.uint8)
+
+    return kanvas
+
+
+def tempelkan_overlay_bgra(frame_bgr: np.ndarray, overlay_bgra: np.ndarray, x: int, y: int) -> np.ndarray:
+    """Alpha-blend gambar BGRA (overlay_bgra) ke atas frame_bgr pada posisi (x, y)."""
+    h_ov, w_ov = overlay_bgra.shape[:2]
+    h_frame, w_frame = frame_bgr.shape[:2]
+
+    x1, y1 = max(x, 0), max(y, 0)
+    x2, y2 = min(x + w_ov, w_frame), min(y + h_ov, h_frame)
+    if x1 >= x2 or y1 >= y2:
+        return frame_bgr
+
+    ov_x1, ov_y1 = x1 - x, y1 - y
+    ov_x2, ov_y2 = ov_x1 + (x2 - x1), ov_y1 + (y2 - y1)
+
+    bagian_overlay = overlay_bgra[ov_y1:ov_y2, ov_x1:ov_x2]
+    alpha = bagian_overlay[:, :, 3:4].astype(np.float32) / 255.0
+    warna_overlay = bagian_overlay[:, :, :3].astype(np.float32)
+
+    roi = frame_bgr[y1:y2, x1:x2].astype(np.float32)
+    hasil = warna_overlay * alpha + roi * (1 - alpha)
+    frame_bgr[y1:y2, x1:x2] = hasil.astype(np.uint8)
+    return frame_bgr
+
+
+def pasang_helm_virtual_ke_wajah(frame_bgr: np.ndarray) -> np.ndarray:
+    """Deteksi wajah pada frame, lalu tempelkan model helm virtual di atasnya."""
+    cascade = muat_deteksi_wajah()
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    wajah_terdeteksi = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+
+    hasil = frame_bgr.copy()
+    for (fx, fy, fw, fh) in wajah_terdeteksi:
+        lebar_helm = int(fw * 1.5)
+        tinggi_helm = int(fh * 1.9)
+        helm = buat_model_helm_virtual(lebar_helm, tinggi_helm)
+
+        pos_x = fx - int((lebar_helm - fw) / 2)
+        pos_y = fy - int(tinggi_helm * 0.28)
+
+        hasil = tempelkan_overlay_bgra(hasil, helm, pos_x, pos_y)
+
+    return hasil
+
+
+# ============================================================
 # FUNGSI BANTUAN: PANGGIL GEMINI UNTUK ANALISIS GAMBAR
 # ============================================================
 def analisis_gambar_dengan_ai(client, image_bytes: bytes, pertanyaan: str, model: str) -> str:
@@ -271,6 +389,7 @@ def jalankan_analisis(image_bytes: bytes, label_user: str = "[Analisis gambar ka
 class PenampungFrame:
     def __init__(self):
         self.frame = None
+        self.pasang_helm = False
         self.lock = threading.Lock()
 
     def set_frame(self, frame):
@@ -281,17 +400,32 @@ class PenampungFrame:
         with self.lock:
             return None if self.frame is None else self.frame.copy()
 
+    def set_pasang_helm(self, aktif: bool):
+        with self.lock:
+            self.pasang_helm = aktif
+
+    def get_pasang_helm(self) -> bool:
+        with self.lock:
+            return self.pasang_helm
+
 
 if "penampung_frame" not in st.session_state:
     st.session_state.penampung_frame = PenampungFrame()
 
 penampung = st.session_state.penampung_frame
+penampung.set_pasang_helm(pasang_helm)
 
 
 def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
-    penampung.set_frame(img)
-    return frame
+    penampung.set_frame(img)  # simpan frame ASLI (tanpa overlay) untuk analisis AI
+
+    if penampung.get_pasang_helm():
+        img_tampil = pasang_helm_virtual_ke_wajah(img)
+    else:
+        img_tampil = img
+
+    return av.VideoFrame.from_ndarray(img_tampil, format="bgr24")
 
 
 # ============================================================
@@ -333,12 +467,13 @@ with kolom_kamera:
         )
         frame_live = penampung.get_frame()
         if frame_live is not None:
-            st.session_state.last_frame = frame_live
+            st.session_state.last_frame = frame_live  # frame ASLI (dipakai untuk analisis AI)
             image_bytes = frame_ke_bytes(frame_live)
-            st.image(
-                cv2.cvtColor(frame_live, cv2.COLOR_BGR2RGB),
-                caption="Frame terakhir dari LIVE stream",
-                use_container_width=True,
+            st.caption(
+                "Preview di atas sudah menampilkan model helm virtual secara langsung "
+                "jika opsi diaktifkan. Analisis AI tetap memakai gambar asli (tanpa overlay)."
+                if pasang_helm else
+                "Frame terakhir dari LIVE stream."
             )
 
     # ---------- Tampilkan gambar (untuk mode Upload / Snapshot) ----------
@@ -352,9 +487,14 @@ with kolom_kamera:
                 edges = deteksi_tepi(frame)
                 st.image(edges, caption="Hasil Deteksi Tepi", use_container_width=True)
             else:
+                frame_tampil = frame
+                caption = "Gambar dari kamera helm"
+                if pasang_helm:
+                    frame_tampil = pasang_helm_virtual_ke_wajah(frame)
+                    caption = "Model Helm Virtual (AR) terpasang"
                 st.image(
-                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                    caption="Gambar dari kamera helm",
+                    cv2.cvtColor(frame_tampil, cv2.COLOR_BGR2RGB),
+                    caption=caption,
                     use_container_width=True,
                 )
         else:

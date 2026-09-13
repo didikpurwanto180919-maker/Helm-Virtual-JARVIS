@@ -1,16 +1,37 @@
 import os
+import io
+import base64
 import urllib.request
 import cv2
 import numpy as np
 import streamlit as st
 from google import genai
-from google.genai import types
+from gtts import gTTS
 
 st.set_page_config(
     page_title="H.E.L.M. Visor System",
     page_icon="🪖",
     layout="wide"
 )
+
+# --- FUNGSI HELPER UNTUK MEMUTAR AUDIO OTOMATIS ---
+def putar_audio_gtts(teks, lang='id'):
+    try:
+        tts = gTTS(text=teks, lang=lang, slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        audio_bytes = fp.read()
+        b64 = base64.b64encode(audio_bytes).decode()
+        # Embed HTML5 Audio dengan Autoplay
+        md = f"""
+            <audio autoplay style="display:none;">
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+            </audio>
+            """
+        st.markdown(md, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Gagal memproses suara: {e}")
 
 # --- SIDEBAR KONTROL MANUAL & AI ---
 with st.sidebar:
@@ -25,6 +46,12 @@ with st.sidebar:
         ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
         index=0
     )
+    
+    st.markdown("---")
+    st.header("🔊 Pengaturan Suara JARVIS")
+    suara_aktif = st.checkbox("Aktifkan Respon Suara", value=True)
+    bahasa_suara = st.selectbox("Bahasa Suara", ["Bahasa Indonesia (id)", "English (en)"], index=0)
+    lang_code = "id" if "Indonesia" in bahasa_suara else "en"
 
     st.markdown("---")
     st.header("🎯 Penyesuaian Manual Helm")
@@ -33,7 +60,7 @@ with st.sidebar:
     offset_y = st.slider("Geser Atas / Bawah (Y)", -300, 300, -20, step=5)
     skala_helm = st.slider("Skala Ukuran Helm", 0.5, 3.0, 1.2, step=0.1)
 
-# --- LOAD HAAR CASCADE STABIL ---
+# --- LOAD HAAR CASCADE ---
 @st.cache_resource
 def load_cascade():
     xml_filename = "haarcascade_frontalface_alt.xml"
@@ -49,7 +76,7 @@ def load_cascade():
 
 face_cascade = load_cascade()
 
-# --- FUNGSI DRAW HELM IRON MAN ---
+# --- FUNGSI HELM IRON MAN ---
 def buat_helm_ironman(lebar, tinggi):
     kanvas = np.zeros((tinggi, lebar, 4), dtype=np.uint8)
     pusat_x, pusat_y = lebar // 2, int(tinggi * 0.48)
@@ -60,10 +87,8 @@ def buat_helm_ironman(lebar, tinggi):
     warna_mata = (255, 240, 200, 255)
     warna_garis = (10, 10, 100, 255)
 
-    # Base Helm Merah
     cv2.ellipse(kanvas, (pusat_x, pusat_y), (sumbu_x, sumbu_y), 0, 0, 360, warna_merah, -1)
 
-    # Faceplate Emas
     titik_emas = np.array([
         [pusat_x - int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
         [pusat_x + int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
@@ -76,7 +101,6 @@ def buat_helm_ironman(lebar, tinggi):
     ], dtype=np.int32)
     cv2.fillPoly(kanvas, [titik_emas], warna_emas)
 
-    # Mata Glow Cyan
     tinggi_mata = max(4, int(sumbu_y * 0.08))
     pos_y_mata = pusat_y - int(sumbu_y * 0.20)
 
@@ -145,9 +169,7 @@ with col_kamera:
                 px = fx - int((lebar_h - fw) / 2) + offset_x
                 py = fy - int(tinggi_h * 0.35) + offset_y
                 frame = tempel_overlay(frame, helm, px, py)
-                st.success("✅ Helm Otomatis Pas di Wajah!")
             else:
-                # Mode Cadangan Pasang Helm di Tengah
                 lebar_h = int(w_img * 0.45 * skala_helm)
                 tinggi_h = int(h_img * 0.55 * skala_helm)
                 helm = buat_helm_ironman(lebar_h, tinggi_h)
@@ -155,21 +177,46 @@ with col_kamera:
                 px = ((w_img - lebar_h) // 2) + offset_x
                 py = ((h_img - tinggi_h) // 2) + offset_y
                 frame = tempel_overlay(frame, helm, px, py)
-                st.info("ℹ️ Pakai Slider di Sidebar Kiri untuk pasin posisi helm ke kepala Anda!")
 
         st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Visual Output", use_container_width=True)
 
 with col_chat:
-    st.subheader("💬 JARVIS Assistant")
+    st.subheader("💬 JARVIS Voice Assistant")
+    
+    # Inisialisasi Riwayat Chat
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Tampilkan Riwayat Chat
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Input Chat Utama
     user_query = st.chat_input("Tanya JARVIS...")
     if user_query:
-        st.write(f"**Anda:** {user_query}")
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with st.chat_message("user"):
+            st.markdown(user_query)
+
         if api_key_input:
             try:
                 client = genai.Client(api_key=api_key_input)
-                res = client.models.generate_content(model=model_name, contents=user_query)
-                st.write(f"**JARVIS:** {res.text}")
+                
+                # Tambahkan instruksi gaya bicara JARVIS
+                system_prompt = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan siap membantu."
+                full_prompt = f"{system_prompt}\n\nPertanyaan User: {user_query}"
+                
+                res = client.models.generate_content(model=model_name, contents=full_prompt)
+                jawaban = res.text
+
+                with st.chat_message("assistant"):
+                    st.markdown(jawaban)
+                    if suara_aktif:
+                        putar_audio_gtts(jawaban, lang=lang_code)
+
+                st.session_state.messages.append({"role": "assistant", "content": jawaban})
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error AI: {e}")
         else:
-            st.warning("Masukkan API Key Gemini di sidebar terlebih dahulu.")
+            st.warning("Silakan masukkan API Key Gemini di sidebar terlebih dahulu.")

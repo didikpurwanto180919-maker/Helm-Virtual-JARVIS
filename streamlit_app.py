@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import streamlit as st
 from google import genai
+from google.genai import types
 from gtts import gTTS
 from streamlit_mic_recorder import mic_recorder
 
@@ -60,7 +61,7 @@ with st.sidebar:
     offset_y = st.slider("Geser Atas / Bawah (Y)", -300, 300, -20, step=5)
     skala_helm = st.slider("Skala Ukuran Helm", 0.5, 3.0, 1.2, step=0.1)
 
-# --- LOAD HAAR CASCADE STABIL ---
+# --- LOAD HAAR CASCADE ---
 @st.cache_resource
 def load_cascade():
     xml_filename = "haarcascade_frontalface_alt.xml"
@@ -190,7 +191,6 @@ with col_chat:
         key="jarvis_mic"
     )
 
-    # Inisialisasi Chat History
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -198,22 +198,20 @@ with col_chat:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Tentukan sumber input: dari Teks atau dari Audio Rekaman
     user_query = None
     input_text = st.chat_input("Atau ketik pesan untuk JARVIS...")
 
     if input_text:
         user_query = input_text
     elif audio_record and "bytes" in audio_record:
-        # Jika user merekam audio, audio langsung dikirim ke Gemini Multimodal
         user_query = "PERINTAH_AUDIO"
 
     if user_query:
         if api_key_input:
             try:
                 client = genai.Client(api_key=api_key_input)
-                system_prompt = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan selalu menjawab dalam bahasa yang sama dengan input user."
-                
+                system_instruction = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan selalu menjawab secara singkat dan langsung dalam bahasa yang sama dengan input pengguna."
+
                 with st.chat_message("user"):
                     if user_query == "PERINTAH_AUDIO":
                         st.audio(audio_record["bytes"], format="audio/wav")
@@ -226,21 +224,27 @@ with col_chat:
                     "content": "🎙️ [Perintah Suara]" if user_query == "PERINTAH_AUDIO" else user_query
                 })
 
-                # Kirim ke Gemini API
+                # Konfigurasi Panggilan SDK Gemini
+                config = types.GenerateContentConfig(
+                    system_instruction=system_instruction
+                )
+
                 if user_query == "PERINTAH_AUDIO":
-                    audio_part = {
-                        "mime_type": "audio/wav",
-                        "data": audio_record["bytes"]
-                    }
+                    # Format audio byte menggunakan types.Part.from_bytes
+                    audio_part = types.Part.from_bytes(
+                        data=audio_record["bytes"],
+                        mime_type="audio/wav"
+                    )
                     res = client.models.generate_content(
                         model=model_name,
-                        contents=[system_prompt, audio_part]
+                        contents=[audio_part],
+                        config=config
                     )
                 else:
-                    full_prompt = f"{system_prompt}\n\nPertanyaan User: {user_query}"
                     res = client.models.generate_content(
                         model=model_name,
-                        contents=full_prompt
+                        contents=user_query,
+                        config=config
                     )
 
                 jawaban = res.text

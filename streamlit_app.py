@@ -5,12 +5,20 @@ Aplikasi Streamlit: asisten virtual berbasis kamera + AI (Google Gemini)
 untuk membantu pengendara — mendeteksi kondisi sekitar lewat kamera helm
 dan menjawab pertanyaan pengguna secara real-time.
 
+Fitur:
+- Upload gambar / snapshot kamera / mode LIVE (real-time streaming) via WebRTC
+- Auto-analisis: JARVIS otomatis menganalisis begitu ada gambar/frame baru
+- Riwayat analisis tersimpan ke file (bertahan selama container berjalan)
+  + bisa diunduh sebagai file .json
+
 Dependencies (requirements.txt):
     streamlit
     opencv-python-headless
     numpy
     requests
     google-genai
+    streamlit-webrtc
+    av
 
 Cara menjalankan lokal:
     streamlit run streamlit_app.py
@@ -18,12 +26,20 @@ Cara menjalankan lokal:
 Environment variable yang dibutuhkan:
     GEMINI_API_KEY  -> API key dari Google AI Studio (https://aistudio.google.com/apikey)
     (Di Streamlit Cloud, set ini lewat menu "Secrets": GEMINI_API_KEY = "xxxx")
+
+Catatan tentang mode LIVE (real-time):
+    Mode ini menggunakan WebRTC untuk streaming video langsung dari browser
+    ke server. Di beberapa jaringan (firewall ketat/kantor/kampus), koneksi
+    WebRTC bisa gagal karena butuh server TURN. Jika mode LIVE tidak
+    menampilkan video, gunakan mode "Upload Gambar" atau "Snapshot" sebagai
+    alternatif yang lebih stabil.
 """
 
 import os
 import io
+import json
 import time
-import base64
+import threading
 
 import numpy as np
 import cv2
@@ -31,6 +47,13 @@ import requests
 import streamlit as st
 from google import genai
 from google.genai import types
+
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode
+    import av
+    WEBRTC_TERSEDIA = True
+except ImportError:
+    WEBRTC_TERSEDIA = False
 
 
 # ============================================================
@@ -44,6 +67,40 @@ st.set_page_config(
 
 st.title("🪖 Helm Virtual JARVIS")
 st.caption("Asisten virtual pintar untuk pengendara — analisis kamera & tanya-jawab AI")
+
+
+# ============================================================
+# PENYIMPANAN RIWAYAT (persisten selama container berjalan)
+# ============================================================
+FILE_RIWAYAT = os.path.join(os.path.dirname(__file__), "riwayat_analisis.json")
+
+
+def muat_riwayat_dari_disk():
+    if os.path.exists(FILE_RIWAYAT):
+        try:
+            with open(FILE_RIWAYAT, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def simpan_riwayat_ke_disk(riwayat):
+    try:
+        with open(FILE_RIWAYAT, "w", encoding="utf-8") as f:
+            json.dump(riwayat, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[WARNING] Gagal menyimpan riwayat ke disk: {e}")
+
+
+def tambah_ke_riwayat(role, text):
+    entri = {
+        "role": role,
+        "text": text,
+        "waktu": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    st.session_state.riwayat_chat.append(entri)
+    simpan_riwayat_ke_disk(st.session_state.riwayat_chat)
 
 
 # ============================================================
@@ -64,27 +121,58 @@ def get_client():
 # STATE AWAL
 # ============================================================
 if "riwayat_chat" not in st.session_state:
-    st.session_state.riwayat_chat = []  # list of {"role": ..., "text": ...}
+    st.session_state.riwayat_chat = muat_riwayat_dari_disk()
 
 if "last_frame" not in st.session_state:
     st.session_state.last_frame = None
+
+if "hash_gambar_terakhir" not in st.session_state:
+    st.session_state.hash_gambar_terakhir = None
+
+if "waktu_auto_terakhir" not in st.session_state:
+    st.session_state.waktu_auto_terakhir = 0.0
 
 
 # ============================================================
 # SIDEBAR - PENGATURAN
 # ============================================================
+opsi_mode = ["Upload Gambar", "Ambil dari Kamera (snapshot)"]
+if WEBRTC_TERSEDIA:
+    opsi_mode.append("LIVE (Real-time Streaming)")
+
 with st.sidebar:
     st.header("⚙️ Pengaturan")
-    mode = st.radio(
-        "Mode Input Kamera",
-        ["Upload Gambar", "Ambil dari Kamera (snapshot)"],
-        index=0,
-    )
+    mode = st.radio("Mode Input Kamera", opsi_mode, index=0)
+
     model_name = st.selectbox(
         "Model Gemini",
         ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"],
         index=0,
     )
+
+    st.markdown("---")
+    auto_analisis = st.checkbox(
+        "🤖 Auto-analisis (tanpa klik tombol)",
+        value=False,
+        help="Jika aktif, JARVIS otomatis menganalisis begitu ada gambar/frame baru.",
+    )
+    interval_auto = 5
+    if mode == "LIVE (Real-time Streaming)" and auto_analisis:
+        interval_auto = st.slider(
+            "Interval auto-analisis (detik)", min_value=3, max_value=30, value=5
+        )
+
+    st.markdown("---")
+    st.write(f"**Riwayat tersimpan:** {len(st.session_state.riwayat_chat)} entri")
+    if st.session_state.riwayat_chat:
+        st.download_button(
+            "⬇️ Unduh Riwayat (.json)",
+            data=json.dumps(st.session_state.riwayat_chat, ensure_ascii=False, indent=2),
+            file_name="riwayat_analisis_jarvis.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+
     st.markdown("---")
     st.write("**Tentang**")
     st.write(
@@ -92,6 +180,11 @@ with st.sidebar:
         "(jalan, kondisi lalu lintas, potensi bahaya) dan menjawab "
         "pertanyaan pengendara secara langsung."
     )
+    if not WEBRTC_TERSEDIA:
+        st.caption(
+            "ℹ️ Mode LIVE tidak tersedia karena library `streamlit-webrtc` "
+            "belum terpasang. Tambahkan ke requirements.txt untuk mengaktifkannya."
+        )
 
 
 # ============================================================
@@ -119,6 +212,12 @@ def frame_ke_bytes(frame: np.ndarray, ext: str = ".jpg") -> bytes:
     if not ok:
         raise ValueError("Gagal meng-encode gambar")
     return buf.tobytes()
+
+
+def hash_gambar(image_bytes: bytes) -> str:
+    """Hash sederhana untuk mendeteksi apakah gambar berubah dari sebelumnya."""
+    import hashlib
+    return hashlib.md5(image_bytes).hexdigest()
 
 
 # ============================================================
@@ -155,12 +254,53 @@ def tanya_jawab_teks(client, pertanyaan: str, model: str) -> str:
     return response.text
 
 
+def jalankan_analisis(image_bytes: bytes, label_user: str = "[Analisis gambar kamera]"):
+    """Helper terpusat: proses gambar, panggil AI, simpan ke riwayat."""
+    client = get_client()
+    frame = proses_gambar_opencv(image_bytes)
+    st.session_state.last_frame = frame
+    jpeg_bytes = frame_ke_bytes(frame)
+    hasil = analisis_gambar_dengan_ai(client, jpeg_bytes, "", model_name)
+    tambah_ke_riwayat("user", label_user)
+    tambah_ke_riwayat("jarvis", hasil)
+
+
+# ============================================================
+# WEBRTC: PENYIMPANAN FRAME TERBARU (thread-safe sederhana)
+# ============================================================
+class PenampungFrame:
+    def __init__(self):
+        self.frame = None
+        self.lock = threading.Lock()
+
+    def set_frame(self, frame):
+        with self.lock:
+            self.frame = frame
+
+    def get_frame(self):
+        with self.lock:
+            return None if self.frame is None else self.frame.copy()
+
+
+if "penampung_frame" not in st.session_state:
+    st.session_state.penampung_frame = PenampungFrame()
+
+penampung = st.session_state.penampung_frame
+
+
+def video_frame_callback(frame):
+    img = frame.to_ndarray(format="bgr24")
+    penampung.set_frame(img)
+    return frame
+
+
 # ============================================================
 # LAYOUT UTAMA: DUA KOLOM
 # ============================================================
 kolom_kamera, kolom_chat = st.columns([1, 1])
 
 image_bytes = None
+gambar_baru_terdeteksi = False
 
 with kolom_kamera:
     st.subheader("📷 Kamera Helm")
@@ -172,56 +312,112 @@ with kolom_kamera:
         if file_upload is not None:
             image_bytes = file_upload.read()
 
-    else:  # Ambil dari Kamera (snapshot)
+    elif mode == "Ambil dari Kamera (snapshot)":
         camera_input = st.camera_input("Ambil gambar dari kamera")
         if camera_input is not None:
             image_bytes = camera_input.getvalue()
 
-    if image_bytes:
-        frame = proses_gambar_opencv(image_bytes)
-        st.session_state.last_frame = frame
-
-        tampilkan_edge = st.checkbox("Tampilkan mode deteksi tepi (edge detection)")
-        if tampilkan_edge:
-            edges = deteksi_tepi(frame)
-            st.image(edges, caption="Hasil Deteksi Tepi", use_container_width=True)
-        else:
+    else:  # LIVE (Real-time Streaming)
+        st.caption(
+            "🔴 Mode LIVE — video langsung dari kamera. "
+            "Jika video tidak muncul, coba refresh atau gunakan mode Upload/Snapshot."
+        )
+        webrtc_streamer(
+            key="jarvis-live",
+            mode=WebRtcMode.SENDONLY,
+            video_frame_callback=video_frame_callback,
+            media_stream_constraints={"video": True, "audio": False},
+            rtc_configuration={
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            },
+        )
+        frame_live = penampung.get_frame()
+        if frame_live is not None:
+            st.session_state.last_frame = frame_live
+            image_bytes = frame_ke_bytes(frame_live)
             st.image(
-                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                caption="Gambar dari kamera helm",
+                cv2.cvtColor(frame_live, cv2.COLOR_BGR2RGB),
+                caption="Frame terakhir dari LIVE stream",
                 use_container_width=True,
             )
-    else:
-        st.info("Belum ada gambar. Upload atau ambil snapshot dari kamera dulu.")
+
+    # ---------- Tampilkan gambar (untuk mode Upload / Snapshot) ----------
+    if mode != "LIVE (Real-time Streaming)":
+        if image_bytes:
+            frame = proses_gambar_opencv(image_bytes)
+            st.session_state.last_frame = frame
+
+            tampilkan_edge = st.checkbox("Tampilkan mode deteksi tepi (edge detection)")
+            if tampilkan_edge:
+                edges = deteksi_tepi(frame)
+                st.image(edges, caption="Hasil Deteksi Tepi", use_container_width=True)
+            else:
+                st.image(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    caption="Gambar dari kamera helm",
+                    use_container_width=True,
+                )
+        else:
+            st.info("Belum ada gambar. Upload atau ambil snapshot dari kamera dulu.")
+
+    # ---------- Deteksi apakah ini gambar/frame BARU ----------
+    if image_bytes:
+        h = hash_gambar(image_bytes)
+        if h != st.session_state.hash_gambar_terakhir:
+            st.session_state.hash_gambar_terakhir = h
+            gambar_baru_terdeteksi = True
 
     st.markdown("---")
-    if st.button("🔍 Analisis Gambar Sekarang", use_container_width=True, disabled=image_bytes is None):
-        client = get_client()
+
+    tombol_manual = st.button(
+        "🔍 Analisis Gambar Sekarang", use_container_width=True, disabled=image_bytes is None
+    )
+
+    perlu_analisis = False
+    if tombol_manual and image_bytes:
+        perlu_analisis = True
+    elif auto_analisis and image_bytes:
+        if mode == "LIVE (Real-time Streaming)":
+            # untuk LIVE, batasi frekuensi biar tidak spam API
+            sekarang = time.time()
+            if sekarang - st.session_state.waktu_auto_terakhir >= interval_auto:
+                perlu_analisis = True
+                st.session_state.waktu_auto_terakhir = sekarang
+        elif gambar_baru_terdeteksi:
+            perlu_analisis = True
+
+    if perlu_analisis:
         with st.spinner("JARVIS sedang menganalisis gambar..."):
-            jpeg_bytes = frame_ke_bytes(st.session_state.last_frame)
-            hasil = analisis_gambar_dengan_ai(client, jpeg_bytes, "", model_name)
-        st.session_state.riwayat_chat.append({"role": "user", "text": "[Analisis gambar kamera]"})
-        st.session_state.riwayat_chat.append({"role": "jarvis", "text": hasil})
+            try:
+                jalankan_analisis(image_bytes)
+            except Exception as e:
+                st.error(f"Gagal menganalisis gambar: {e}")
+        st.rerun()
+
+    # Auto-refresh halaman saat mode LIVE + auto-analisis aktif,
+    # supaya frame terbaru terus dicek secara berkala.
+    if mode == "LIVE (Real-time Streaming)" and auto_analisis:
+        time.sleep(1)
         st.rerun()
 
 
 with kolom_chat:
     st.subheader("💬 Tanya JARVIS")
 
-    # Tampilkan riwayat chat
     chat_container = st.container(height=400)
     with chat_container:
         for pesan in st.session_state.riwayat_chat:
+            waktu = pesan.get("waktu", "")
             if pesan["role"] == "user":
-                st.chat_message("user").write(pesan["text"])
+                st.chat_message("user").write(f"{pesan['text']}  \n:gray[{waktu}]")
             else:
-                st.chat_message("assistant", avatar="🪖").write(pesan["text"])
+                st.chat_message("assistant", avatar="🪖").write(f"{pesan['text']}  \n:gray[{waktu}]")
 
     pertanyaan = st.chat_input("Tanya sesuatu ke JARVIS, atau tanya soal gambar di kiri...")
 
     if pertanyaan:
         client = get_client()
-        st.session_state.riwayat_chat.append({"role": "user", "text": pertanyaan})
+        tambah_ke_riwayat("user", pertanyaan)
 
         with st.spinner("JARVIS sedang berpikir..."):
             if st.session_state.last_frame is not None:
@@ -230,12 +426,15 @@ with kolom_chat:
             else:
                 jawaban = tanya_jawab_teks(client, pertanyaan, model_name)
 
-        st.session_state.riwayat_chat.append({"role": "jarvis", "text": jawaban})
+        tambah_ke_riwayat("jarvis", jawaban)
         st.rerun()
 
-    if st.button("🗑️ Hapus Riwayat Chat"):
-        st.session_state.riwayat_chat = []
-        st.rerun()
+    kolom_hapus, kolom_unduh = st.columns(2)
+    with kolom_hapus:
+        if st.button("🗑️ Hapus Riwayat Chat", use_container_width=True):
+            st.session_state.riwayat_chat = []
+            simpan_riwayat_ke_disk([])
+            st.rerun()
 
 
 # ============================================================

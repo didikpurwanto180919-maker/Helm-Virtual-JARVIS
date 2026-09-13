@@ -42,9 +42,10 @@ with st.sidebar:
         type="password",
         value=os.environ.get("GEMINI_API_KEY", "")
     )
+    # PERBAIKAN: Gunakan gemini-2.5-flash sebagai pilihan utama
     model_name = st.selectbox(
         "Model Gemini AI",
-        ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+        ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
         index=0
     )
     
@@ -224,13 +225,11 @@ with col_chat:
                     "content": "🎙️ [Perintah Suara]" if user_query == "PERINTAH_AUDIO" else user_query
                 })
 
-                # Konfigurasi Panggilan SDK Gemini
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction
                 )
 
                 if user_query == "PERINTAH_AUDIO":
-                    # Format audio byte menggunakan types.Part.from_bytes
                     audio_part = types.Part.from_bytes(
                         data=audio_record["bytes"],
                         mime_type="audio/wav"

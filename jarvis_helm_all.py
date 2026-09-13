@@ -15,20 +15,16 @@ st.title("🛡️ JARVIS Virtual Helmet Visor")
 GEMINI_API_KEY = st.sidebar.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
 KOTA = st.sidebar.text_input("Kota untuk Cuaca", value="Jakarta")
 
-# --- FUNGSI LOAD HAAR CASCADE AMAN (DOWNLOADING AUTOMATIC) ---
-@st.cache_resource
-def load_face_cascade():
-    xml_filename = "haarcascade_frontalface_default.xml"
-    if not os.path.exists(xml_filename):
-        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
-        try:
-            urllib.request.urlretrieve(url, xml_filename)
-        except Exception as e:
-            st.error(f"Gagal mengunduh file classifier: {e}")
-            return None
-    return cv2.CascadeClassifier(xml_filename)
+# --- PEMUATAN HAAR CASCADE TANPA ST.CACHE_RESOURCE ---
+xml_filename = "haarcascade_frontalface_default.xml"
+if not os.path.exists(xml_filename):
+    url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+    try:
+        urllib.request.urlretrieve(url, xml_filename)
+    except Exception as e:
+        st.error(f"Gagal mengunduh file classifier: {e}")
 
-face_cascade = load_face_cascade()
+face_cascade = cv2.CascadeClassifier(xml_filename)
 
 # --- FUNGSI INFORMASI CUACA ---
 def get_weather(kota):
@@ -42,7 +38,7 @@ def get_weather(kota):
 # --- INTERFACE KAMERA WEBCAM ---
 picture = st.camera_input("Ambil foto dari Visor Helm")
 
-if picture and face_cascade is not None:
+if picture and not face_cascade.empty():
     # Konversi gambar dari Streamlit ke OpenCV
     bytes_data = picture.getvalue()
     img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)

@@ -5,9 +5,9 @@ import urllib.request
 import cv2
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
 from google import genai
 from gtts import gTTS
+from streamlit_mic_recorder import mic_recorder
 
 st.set_page_config(
     page_title="H.E.L.M. Visor System",
@@ -183,59 +183,12 @@ with col_kamera:
 with col_chat:
     st.subheader("💬 JARVIS Voice Assistant")
     
-    # --- WIDGET SPEECH RECOGNITION (INPUT MIKROFON) ---
-    st.markdown("##### 🎙️ Bicara ke JARVIS:")
-    st_lang = "id-ID" if lang_code == "id" else "en-US"
-    
-    components.html(f"""
-        <button id="micBtn" style="
-            background-color: #ff4b4b; 
-            color: white; 
-            border: none; 
-            padding: 10px 20px; 
-            font-size: 16px; 
-            border-radius: 8px; 
-            cursor: pointer;
-            width: 100%;">
-            🔴 Klik & Bicara Sekarang
-        </button>
-        <p id="statusText" style="font-size: 12px; color: gray; margin-top: 5px;"></p>
-
-        <script>
-            const btn = document.getElementById('micBtn');
-            const status = document.getElementById('statusText');
-            
-            if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                const recognition = new SpeechRecognition();
-                recognition.lang = '{st_lang}';
-                recognition.interimResults = false;
-
-                btn.onclick = () => {{
-                    recognition.start();
-                    status.innerText = "Mendengarkan suara Anda...";
-                    btn.style.backgroundColor = "#ff8800";
-                }};
-
-                recognition.onresult = (event) => {{
-                    const text = event.results[0][0].transcript;
-                    status.innerText = "Terdeteksi: " + text;
-                    btn.style.backgroundColor = "#ff4b4b";
-                    
-                    // Salin hasil teks ke clipboard agar mudah dimasukkan ke input
-                    navigator.clipboard.writeText(text);
-                    alert("Suara terdeteksi: '" + text + "'\\n\\nTeks telah disalin! Tempel (Ctrl+V) pada kolom chat di bawah.");
-                }};
-
-                recognition.onerror = (event) => {{
-                    status.innerText = "Error: " + event.error;
-                    btn.style.backgroundColor = "#ff4b4b";
-                }};
-            }} else {{
-                status.innerText = "Browser Anda belum mendukung Speech Recognition.";
-            }}
-        </script>
-    """, height=110)
+    st.markdown("##### 🎙️ Rekam Perintah Suara:")
+    audio_record = mic_recorder(
+        start_prompt="🔴 Mulai Bicara",
+        stop_prompt="⏹️ Selesai / Kirim",
+        key="jarvis_mic"
+    )
 
     # Inisialisasi Chat History
     if "messages" not in st.session_state:
@@ -245,19 +198,51 @@ with col_chat:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    user_query = st.chat_input("Tanya JARVIS (atau paste hasil rekaman)...")
-    if user_query:
-        st.session_state.messages.append({"role": "user", "content": user_query})
-        with st.chat_message("user"):
-            st.markdown(user_query)
+    # Tentukan sumber input: dari Teks atau dari Audio Rekaman
+    user_query = None
+    input_text = st.chat_input("Atau ketik pesan untuk JARVIS...")
 
+    if input_text:
+        user_query = input_text
+    elif audio_record and "bytes" in audio_record:
+        # Jika user merekam audio, audio langsung dikirim ke Gemini Multimodal
+        user_query = "PERINTAH_AUDIO"
+
+    if user_query:
         if api_key_input:
             try:
                 client = genai.Client(api_key=api_key_input)
-                system_prompt = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan siap membantu."
-                full_prompt = f"{system_prompt}\n\nPertanyaan User: {user_query}"
+                system_prompt = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan selalu menjawab dalam bahasa yang sama dengan input user."
                 
-                res = client.models.generate_content(model=model_name, contents=full_prompt)
+                with st.chat_message("user"):
+                    if user_query == "PERINTAH_AUDIO":
+                        st.audio(audio_record["bytes"], format="audio/wav")
+                        st.caption("🎙️ Perintah suara terkirim")
+                    else:
+                        st.markdown(user_query)
+
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": "🎙️ [Perintah Suara]" if user_query == "PERINTAH_AUDIO" else user_query
+                })
+
+                # Kirim ke Gemini API
+                if user_query == "PERINTAH_AUDIO":
+                    audio_part = {
+                        "mime_type": "audio/wav",
+                        "data": audio_record["bytes"]
+                    }
+                    res = client.models.generate_content(
+                        model=model_name,
+                        contents=[system_prompt, audio_part]
+                    )
+                else:
+                    full_prompt = f"{system_prompt}\n\nPertanyaan User: {user_query}"
+                    res = client.models.generate_content(
+                        model=model_name,
+                        contents=full_prompt
+                    )
+
                 jawaban = res.text
 
                 with st.chat_message("assistant"):
@@ -266,6 +251,7 @@ with col_chat:
                         putar_audio_gtts(jawaban, lang=lang_code)
 
                 st.session_state.messages.append({"role": "assistant", "content": jawaban})
+
             except Exception as e:
                 st.error(f"Error AI: {e}")
         else:

@@ -1,23 +1,56 @@
 import os
+import urllib.request
 import cv2
 import numpy as np
 import streamlit as st
-import mediapipe as mp
+from google import genai
+from google.genai import types
 
-# Inisialisasi MediaPipe Face Detection
-mp_face_detection = mp.solutions.face_detection
+st.set_page_config(
+    page_title="H.E.L.M. Visor System",
+    page_icon="🪖",
+    layout="wide"
+)
 
-st.set_page_config(page_title="H.E.L.M. Visor System", layout="wide")
-
-# --- SIDEBAR KONTROL MANUAL (FALLBACK) ---
+# --- SIDEBAR KONTROL MANUAL & AI ---
 with st.sidebar:
-    st.header("⚙️ Penyesuaian Manual Helm")
-    offset_x = st.slider("Geser Kiri/Kanan (X)", -200, 200, 0)
-    offset_y = st.slider("Geser Atas/Bawah (Y)", -200, 200, 0)
-    skala_helm = st.slider("Ukuran Helm", 0.5, 2.5, 1.0, 0.1)
+    st.header("⚙️ Pengaturan System")
+    api_key_input = st.text_input(
+        "Gemini API Key",
+        type="password",
+        value=os.environ.get("GEMINI_API_KEY", "")
+    )
+    model_name = st.selectbox(
+        "Model Gemini AI",
+        ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        index=0
+    )
 
+    st.markdown("---")
+    st.header("🎯 Penyesuaian Manual Helm")
+    aktifkan_helm = st.checkbox("🪖 Tampilkan Helm Virtual", value=True)
+    offset_x = st.slider("Geser Kiri / Kanan (X)", -300, 300, 0, step=5)
+    offset_y = st.slider("Geser Atas / Bawah (Y)", -300, 300, -20, step=5)
+    skala_helm = st.slider("Skala Ukuran Helm", 0.5, 3.0, 1.2, step=0.1)
+
+# --- LOAD HAAR CASCADE STABIL ---
+@st.cache_resource
+def load_cascade():
+    xml_filename = "haarcascade_frontalface_alt.xml"
+    if not os.path.exists(xml_filename):
+        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt.xml"
+        try:
+            urllib.request.urlretrieve(url, xml_filename)
+        except Exception:
+            pass
+    if os.path.exists(xml_filename):
+        return cv2.CascadeClassifier(xml_filename)
+    return None
+
+face_cascade = load_cascade()
+
+# --- FUNGSI DRAW HELM IRON MAN ---
 def buat_helm_ironman(lebar, tinggi):
-    """Membuat grafik helm Iron Man BGRA."""
     kanvas = np.zeros((tinggi, lebar, 4), dtype=np.uint8)
     pusat_x, pusat_y = lebar // 2, int(tinggi * 0.48)
     sumbu_x, sumbu_y = int(lebar * 0.45), int(tinggi * 0.45)
@@ -27,8 +60,10 @@ def buat_helm_ironman(lebar, tinggi):
     warna_mata = (255, 240, 200, 255)
     warna_garis = (10, 10, 100, 255)
 
+    # Base Helm Merah
     cv2.ellipse(kanvas, (pusat_x, pusat_y), (sumbu_x, sumbu_y), 0, 0, 360, warna_merah, -1)
-    
+
+    # Faceplate Emas
     titik_emas = np.array([
         [pusat_x - int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
         [pusat_x + int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
@@ -41,16 +76,17 @@ def buat_helm_ironman(lebar, tinggi):
     ], dtype=np.int32)
     cv2.fillPoly(kanvas, [titik_emas], warna_emas)
 
-    tinggi_mata = int(sumbu_y * 0.08)
+    # Mata Glow Cyan
+    tinggi_mata = max(4, int(sumbu_y * 0.08))
     pos_y_mata = pusat_y - int(sumbu_y * 0.20)
-    
+
     mata_kiri = np.array([
         [pusat_x - int(sumbu_x * 0.60), pos_y_mata],
         [pusat_x - int(sumbu_x * 0.15), pos_y_mata + int(tinggi_mata * 0.4)],
         [pusat_x - int(sumbu_x * 0.20), pos_y_mata + tinggi_mata],
         [pusat_x - int(sumbu_x * 0.55), pos_y_mata + int(tinggi_mata * 0.7)],
     ], dtype=np.int32)
-    
+
     mata_kanan = np.array([
         [pusat_x + int(sumbu_x * 0.15), pos_y_mata + int(tinggi_mata * 0.4)],
         [pusat_x + int(sumbu_x * 0.60), pos_y_mata],
@@ -83,26 +119,25 @@ def tempel_overlay(frame, overlay, x, y):
     frame[y1:y2, x1:x2] = (warna * alpha + roi * (1.0 - alpha)).astype(np.uint8)
     return frame
 
-st.title("🪖 H.E.L.M. Visor System")
-camera_input = st.camera_input("Ambil Foto")
+st.title("🪖 H.E.L.M. Visor System - Virtual Overlay")
 
-if camera_input:
-    bytes_data = camera_input.getvalue()
-    frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-    h_img, w_img, _ = frame.shape
+col_kamera, col_chat = st.columns([1.1, 0.9])
 
-    # Gunakan MediaPipe untuk deteksi posisi wajah
-    with mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.3) as face_detection:
-        results = face_detection.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        
-        if results.detections:
-            for detection in results.detections:
-                bboxC = detection.location_data.relative_bounding_box
-                fx = int(bboxC.xmin * w_img)
-                fy = int(bboxC.ymin * h_img)
-                fw = int(bboxC.width * w_img)
-                fh = int(bboxC.height * h_img)
+with col_kamera:
+    camera_input = st.camera_input("Ambil Snapshot")
 
+    if camera_input:
+        frame = cv2.imdecode(np.frombuffer(camera_input.getvalue(), np.uint8), cv2.IMREAD_COLOR)
+        h_img, w_img, _ = frame.shape
+
+        if aktifkan_helm:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            wajah = []
+            if face_cascade is not None:
+                wajah = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(40, 40))
+
+            if len(wajah) > 0:
+                fx, fy, fw, fh = wajah[0]
                 lebar_h = int(fw * 1.8 * skala_helm)
                 tinggi_h = int(fh * 2.2 * skala_helm)
                 helm = buat_helm_ironman(lebar_h, tinggi_h)
@@ -110,16 +145,31 @@ if camera_input:
                 px = fx - int((lebar_h - fw) / 2) + offset_x
                 py = fy - int(tinggi_h * 0.35) + offset_y
                 frame = tempel_overlay(frame, helm, px, py)
-            st.success("✅ Wajah terdeteksi dan helm berhasil dipasang!")
+                st.success("✅ Helm Otomatis Pas di Wajah!")
+            else:
+                # Mode Cadangan Pasang Helm di Tengah
+                lebar_h = int(w_img * 0.45 * skala_helm)
+                tinggi_h = int(h_img * 0.55 * skala_helm)
+                helm = buat_helm_ironman(lebar_h, tinggi_h)
+
+                px = ((w_img - lebar_h) // 2) + offset_x
+                py = ((h_img - tinggi_h) // 2) + offset_y
+                frame = tempel_overlay(frame, helm, px, py)
+                st.info("ℹ️ Pakai Slider di Sidebar Kiri untuk pasin posisi helm ke kepala Anda!")
+
+        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Visual Output", use_container_width=True)
+
+with col_chat:
+    st.subheader("💬 JARVIS Assistant")
+    user_query = st.chat_input("Tanya JARVIS...")
+    if user_query:
+        st.write(f"**Anda:** {user_query}")
+        if api_key_input:
+            try:
+                client = genai.Client(api_key=api_key_input)
+                res = client.models.generate_content(model=model_name, contents=user_query)
+                st.write(f"**JARVIS:** {res.text}")
+            except Exception as e:
+                st.error(f"Error: {e}")
         else:
-            # Mode Cadangan: Jika AI gagal mendeteksi, pasang helm di tengah foto
-            lebar_h = int(w_img * 0.45 * skala_helm)
-            tinggi_h = int(h_img * 0.55 * skala_helm)
-            helm = buat_helm_ironman(lebar_h, tinggi_h)
-
-            px = ((w_img - lebar_h) // 2) + offset_x
-            py = ((h_img - tinggi_h) // 2) + offset_y
-            frame = tempel_overlay(frame, helm, px, py)
-            st.warning("⚠️ Wajah tidak terdeteksi otomatis. Gunakan slider di sidebar untuk menyesuaikan posisi helm.")
-
-    st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Hasil Penempelan Helm Virtual", use_container_width=True)
+            st.warning("Masukkan API Key Gemini di sidebar terlebih dahulu.")

@@ -1,180 +1,164 @@
-import streamlit as st
-import cv2
-import numpy as np
-import requests
-from datetime import datetime
-import os
-import urllib.request
-from google import genai
+"""
+JARVIS - Asisten Virtual Sederhana (Python)
+=============================================
 
-# --- 1. KONFIGURASI HALAMAN ---
-st.set_page_config(
-    page_title="JARVIS Virtual Visor", 
-    layout="wide", 
-    page_icon="🛡️"
-)
+Fitur:
+- Mendengarkan perintah suara (Speech-to-Text via microphone)
+- Menjawab dengan suara (Text-to-Speech)
+- Bisa juga dipakai lewat mode teks (ketik perintah manual)
+- Perintah dasar: buka website, cek waktu, cari di Google, cerita lucu, dll.
 
-# Custom CSS untuk tampilan lebih Sci-Fi
-st.markdown("""
-<style>
-    .reportview-container {
-        background: #0d1117;
-        color: #c9d1d9;
-    }
-    .main .block-container{
-        padding-top: 2rem;
-    }
-    h1 {
-        color: #58a6ff;
-        text-shadow: 0 0 10px #58a6ff;
-    }
-    .stCameraInput > div > div {
-        border: 2px solid #58a6ff;
-        box-shadow: 0 0 15px rgba(88, 166, 255, 0.5);
-    }
-</style>
-""", unsafe_allow_html=True)
+Instalasi library yang dibutuhkan (jalankan di terminal):
+    pip install pyttsx3 SpeechRecognition pyaudio wikipedia
 
-st.title("🛡️ JARVIS Virtual Helmet Visor")
+Catatan:
+- Di Windows, pyaudio biasanya langsung berhasil di-install.
+- Di Linux, mungkin perlu: sudo apt-get install portaudio19-dev python3-pyaudio
+- Di Mac, mungkin perlu: brew install portaudio
+- Jika microphone/pyaudio bermasalah, JARVIS otomatis akan pindah ke mode teks.
+"""
 
-# --- 2. SIDEBAR SETUP (API KEYS) ---
-with st.sidebar:
-    st.header("⚙️ Sistem Pengaturan")
-    # Disarankan menggunakan st.secrets untuk deployment produk
-    GEMINI_API_KEY = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
-    KOTA = st.text_input("Kota untuk Cuaca", value="Jakarta")
-    st.write("---")
-    st.write("Visor JARVIS: v2.8 - Status: Operational")
+import datetime
+import webbrowser
+import sys
 
-# --- 3. PEMUATAN HAAR CASCADE (SANGAT STABIL) ---
-@st.cache_resource
-def load_face_cascade():
-    """
-    Memuat Haar Cascade. Jika tidak ada secara lokal, sistem akan mengunduhnya.
-    Namun, disarankan memasukkan file XML langsung ke repo GitHub Anda.
-    """
-    xml_filename = "haarcascade_frontalface_default.xml"
-    
-    # Cek apakah modul cv2 rusak (sering terjadi jika headless tidak lengkap)
-    if not hasattr(cv2, 'CascadeClassifier'):
-        st.error("FATAL ERROR: Modul cv2 terdeteksi rusak (tanpa CascadeClassifier). Periksa requirements.txt Anda.")
-        return None
+# ---------- Coba import library suara, fallback ke mode teks jika gagal ----------
+VOICE_MODE = True
+try:
+    import pyttsx3
+    import speech_recognition as sr
+except ImportError:
+    VOICE_MODE = False
+    print("[INFO] Library suara tidak ditemukan. Berjalan dalam mode teks saja.")
+    print("       Install dengan: pip install pyttsx3 SpeechRecognition pyaudio\n")
 
-    # Cek apakah file lokal ada
-    if not os.path.exists(xml_filename):
-        # Fallback: Unduh jika file lokal tidak ditemukan
-        with st.spinner(f"Unduh file model {xml_filename}..."):
-            url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+
+class Jarvis:
+    def __init__(self, nama_user="Tuan"):
+        self.nama_user = nama_user
+        self.voice_mode = VOICE_MODE
+
+        if self.voice_mode:
             try:
-                urllib.request.urlretrieve(url, xml_filename)
+                self.engine = pyttsx3.init()
+                self.engine.setProperty("rate", 170)  # kecepatan bicara
+                voices = self.engine.getProperty("voices")
+                # Coba pilih suara wanita/pria jika tersedia (opsional)
+                if voices:
+                    self.engine.setProperty("voice", voices[0].id)
             except Exception as e:
-                st.error(f"Gagal mengunduh file classifier: {e}")
-                return None
-    
-    cascade = cv2.CascadeClassifier(xml_filename)
-    if cascade.empty():
-        st.error(f"Gagal memuat Cascade Classifier dari {xml_filename}.")
-        return None
-    return cascade
+                print(f"[WARNING] Gagal inisialisasi text-to-speech: {e}")
+                self.voice_mode = False
 
-# Coba muat cascade secara global
-face_cascade = load_face_cascade()
+    # ---------- OUTPUT ----------
+    def bicara(self, teks):
+        """Menampilkan teks + mengucapkannya jika mode suara aktif."""
+        print(f"JARVIS: {teks}")
+        if self.voice_mode:
+            try:
+                self.engine.say(teks)
+                self.engine.runAndWait()
+            except Exception:
+                pass  # kalau gagal bicara, tetap lanjut pakai teks
 
-# --- 4. FUNGSI LAYANAN (CUACA & AI) ---
-def get_weather(kota):
-    """Mengambil informasi cuaca dari wttr.in (gratis dan tanpa API key)"""
-    try:
-        url = f"https://wttr.in/{kota}?format=%t+%C"
-        res = requests.get(url, timeout=3).text
-        return res.strip()
-    except Exception:
-        return "27 C - Operational"
+    # ---------- INPUT ----------
+    def dengarkan(self):
+        """Mendengarkan suara dari mikrofon dan mengembalikan teks (lowercase)."""
+        recognizer = sr.Recognizer()
+        try:
+            with sr.Microphone() as source:
+                print("\n[Mendengarkan...]")
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = recognizer.listen(source, timeout=5, phrase_time_limit=6)
+            perintah = recognizer.recognize_google(audio, language="id-ID")
+            print(f"Anda: {perintah}")
+            return perintah.lower()
+        except sr.WaitTimeoutError:
+            return ""
+        except sr.UnknownValueError:
+            self.bicara("Maaf, saya tidak menangkap ucapan Anda.")
+            return ""
+        except sr.RequestError:
+            self.bicara("Koneksi ke layanan pengenalan suara bermasalah.")
+            return ""
+        except Exception as e:
+            print(f"[ERROR mikrofon] {e}")
+            return ""
 
-def talk_to_jarvis(query, api_key):
-    """Menghubungi protokol AI Gemini untuk mendapatkan respon singkat ala JARVIS"""
-    if not api_key or "MASUKKAN" in api_key:
-        return "⚠️ Masukkan API Key untuk mengaktifkan AI."
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=f"Jawab ringkas dalam 1-2 kalimat pendek ala asisten JARVIS Iron Man: {query}"
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"Protokol komunikasi AI gagal: {e}"
+    def ambil_input(self):
+        """Mengambil perintah dari suara (jika aktif) atau dari keyboard."""
+        if self.voice_mode:
+            teks = self.dengarkan()
+            if teks:
+                return teks
+            # fallback ke teks kalau suara gagal menangkap
+            return ""
+        else:
+            return input("Anda (ketik): ").lower()
 
-# --- 5. INTERFACE HUD KAMERA ---
-st.subheader("📸 Visor Interface")
+    # ---------- LOGIKA PERINTAH ----------
+    def proses_perintah(self, perintah):
+        if not perintah:
+            return True  # tidak ada perintah, lanjut loop
 
-# Cek kondisi sebelum menampilkan kamera
-if face_cascade is not None and not face_cascade.empty():
-    picture = st.camera_input("Ambil foto dari Visor Helm")
+        if any(k in perintah for k in ["jam berapa", "waktu sekarang"]):
+            sekarang = datetime.datetime.now().strftime("%H:%M")
+            self.bicara(f"Sekarang jam {sekarang}")
 
-    if picture:
-        # Konversi gambar dari Streamlit ke OpenCV
-        bytes_data = picture.getvalue()
-        img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Deteksi Wajah
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
-        
-        # --- DESAIN OVERLAYS HUD ---
-        h, w, _ = img.shape
-        color_cyan = (255, 255, 0)
-        color_red = (0, 0, 255)
-        color_green = (0, 255, 0)
-        
-        weather_info = get_weather(KOTA)
-        now = datetime.now().strftime("%H:%M:%S | %d-%m-%Y")
-        
-        # Render Box Header HUD
-        cv2.rectangle(img, (10, 10), (w - 10, 85), (20, 20, 20), -1) # Background box
-        cv2.rectangle(img, (10, 10), (w - 10, 85), color_cyan, 1) # Border box
-        
-        # Text Header HUD
-        cv2.putText(img, "HELM VISOR JARVIS - SYSTEM ONLINE", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_cyan, 2)
-        cv2.putText(img, f"WAKTU : {now}", (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        cv2.putText(img, f"CUACA : {KOTA} ({weather_info})", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_green, 1)
-        
-        # Render Boks Deteksi Wajah & Reticle
-        if len(faces) == 0:
-            st.toast("Pilot Tidak Terdeteksi", icon="ℹ️")
-        
-        for (x, y, fw, fh) in faces:
-            # Box Targeting
-            cv2.rectangle(img, (x, y), (x + fw, y + fh), color_cyan, 2)
-            
-            # Center Reticle (Silang Merah)
-            cx, cy = x + fw // 2, y + fh // 2
-            cv2.line(img, (cx - 15, cy), (cx + 15, cy), color_red, 2)
-            cv2.line(img, (cx, cy - 15), (cx, cy + 15), color_red, 2)
-            
-            # Label Target
-            cv2.putText(img, "TARGET DETECTED: PILOT", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_cyan, 1)
-            st.toast("Wajah Pilot Dikenali", icon="✅")
-            
-        # Tampilkan Gambar HUD ke Layar Streamlit
-        # Konversi ke RGB karena Streamlit membutuhkan RGB
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        st.image(img_rgb, caption="Output Visual HUD Visor", use_container_width=True)
-else:
-    st.error("⚠️ Sistem Deteksi Wajah gagal diaktifkan. Periksa log atau requirements.txt Anda.")
-    st.camera_input("Ambil foto (Hanya Cuaca)")
+        elif any(k in perintah for k in ["tanggal berapa", "hari ini tanggal"]):
+            hari_ini = datetime.datetime.now().strftime("%d %B %Y")
+            self.bicara(f"Hari ini tanggal {hari_ini}")
 
-# --- 6. INTEGRASI ASISTEN AI GEMINI ---
-st.write("---")
-st.subheader("🗣️ Tanya JARVIS AI")
-query = st.text_input("Tanya Protokol AI:", placeholder="JARVIS, apa cuaca hari ini?")
+        elif "buka youtube" in perintah:
+            self.bicara("Membuka YouTube")
+            webbrowser.open("https://youtube.com")
 
-if query:
-    if not GEMINI_API_KEY:
-        st.warning("Masukkan Gemini API Key pada sidebar kiri terlebih dahulu.")
-    else:
-        with st.spinner("Menghubungi protokol JARVIS..."):
-            response = talk_to_jarvis(query, GEMINI_API_KEY)
-            if "⚠️" in response:
-                st.error(response)
+        elif "buka google" in perintah:
+            self.bicara("Membuka Google")
+            webbrowser.open("https://google.com")
+
+        elif perintah.startswith("cari ") or "cari di google" in perintah:
+            query = perintah.replace("cari di google", "").replace("cari", "").strip()
+            if query:
+                self.bicara(f"Mencari {query} di Google")
+                webbrowser.open(f"https://www.google.com/search?q={query}")
             else:
-                st.info(f"🤖 **JARVIS:** {response}")
+                self.bicara("Mau mencari apa?")
+
+        elif any(k in perintah for k in ["siapa kamu", "siapa nama kamu"]):
+            self.bicara("Saya JARVIS, asisten virtual pribadi Anda.")
+
+        elif any(k in perintah for k in ["terima kasih", "makasih"]):
+            self.bicara("Sama-sama, senang bisa membantu!")
+
+        elif any(k in perintah for k in ["berhenti", "keluar", "matikan", "sampai jumpa"]):
+            self.bicara("Baik, sampai jumpa!")
+            return False  # keluar dari loop utama
+
+        else:
+            self.bicara("Maaf, saya belum mengerti perintah itu.")
+
+        return True
+
+    # ---------- LOOP UTAMA ----------
+    def jalankan(self):
+        mode = "SUARA" if self.voice_mode else "TEKS"
+        self.bicara(f"Halo {self.nama_user}, saya JARVIS. Mode aktif: {mode}. Ada yang bisa saya bantu?")
+
+        aktif = True
+        while aktif:
+            try:
+                perintah = self.ambil_input()
+                aktif = self.proses_perintah(perintah)
+            except KeyboardInterrupt:
+                self.bicara("Program dihentikan paksa. Sampai jumpa!")
+                break
+
+
+if __name__ == "__main__":
+    nama = "Tuan"
+    if len(sys.argv) > 1:
+        nama = sys.argv[1]
+
+    jarvis = Jarvis(nama_user=nama)
+    jarvis.jalankan()

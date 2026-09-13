@@ -3,5 +3,3 @@ opencv-python-headless
 numpy
 requests
 google-genai
-streamlit-webrtc
-av

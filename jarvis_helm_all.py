@@ -4,10 +4,15 @@ import numpy as np
 import requests
 from datetime import datetime
 import os
+import urllib.request
 from google import genai
 
 # --- 1. KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="JARVIS Virtual Visor", layout="wide", page_icon="🛡️")
+st.set_page_config(
+    page_title="JARVIS Virtual Visor", 
+    layout="wide", 
+    page_icon="🛡️"
+)
 
 # Custom CSS untuk tampilan lebih Sci-Fi
 st.markdown("""
@@ -23,6 +28,10 @@ st.markdown("""
         color: #58a6ff;
         text-shadow: 0 0 10px #58a6ff;
     }
+    .stCameraInput > div > div {
+        border: 2px solid #58a6ff;
+        box-shadow: 0 0 15px rgba(88, 166, 255, 0.5);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -31,49 +40,49 @@ st.title("🛡️ JARVIS Virtual Helmet Visor")
 # --- 2. SIDEBAR SETUP (API KEYS) ---
 with st.sidebar:
     st.header("⚙️ Sistem Pengaturan")
+    # Disarankan menggunakan st.secrets untuk deployment produk
     GEMINI_API_KEY = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
     KOTA = st.text_input("Kota untuk Cuaca", value="Jakarta")
     st.write("---")
-    st.write("Visor JARVIS: v2.7 - Status: Operational")
+    st.write("Visor JARVIS: v2.8 - Status: Operational")
 
 # --- 3. PEMUATAN HAAR CASCADE (SANGAT STABIL) ---
 @st.cache_resource
 def load_face_cascade():
     """
-    Memuat Haar Cascade dari file lokal.
-    Sangat disarankan untuk memasukkan file XML ini langsung ke repositori GitHub Anda.
+    Memuat Haar Cascade. Jika tidak ada secara lokal, sistem akan mengunduhnya.
+    Namun, disarankan memasukkan file XML langsung ke repo GitHub Anda.
     """
     xml_filename = "haarcascade_frontalface_default.xml"
     
-    # Cek apakah modul cv2 rusak
+    # Cek apakah modul cv2 rusak (sering terjadi jika headless tidak lengkap)
     if not hasattr(cv2, 'CascadeClassifier'):
         st.error("FATAL ERROR: Modul cv2 terdeteksi rusak (tanpa CascadeClassifier). Periksa requirements.txt Anda.")
         return None
 
     # Cek apakah file lokal ada
-    if os.path.exists(xml_filename):
-        cascade = cv2.CascadeClassifier(xml_filename)
-        # Pastikan file bisa dimuat
-        if cascade.empty():
-            st.warning(f"File {xml_filename} ada tapi gagal dimuat sebagai Cascade Classifier. Pastikan file tidak korup.")
-            return None
-        return cascade
-    else:
-        # Jika file lokal tidak ada, beri instruksi
-        st.error(f"⚠️ File '{xml_filename}' tidak ditemukan di repositori Anda.")
-        st.markdown(f"""
-        **Langkah Perbaikan:**
-        1.  Unduh file resmi dari OpenCV GitHub: [haarcascade_frontalface_default.xml](https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml)
-        2.  Unggah/Commit file tersebut ke folder utama repositori GitHub Anda.
-        3.  Deploy ulang di Streamlit Cloud.
-        """)
+    if not os.path.exists(xml_filename):
+        # Fallback: Unduh jika file lokal tidak ditemukan
+        with st.spinner(f"Unduh file model {xml_filename}..."):
+            url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+            try:
+                urllib.request.urlretrieve(url, xml_filename)
+            except Exception as e:
+                st.error(f"Gagal mengunduh file classifier: {e}")
+                return None
+    
+    cascade = cv2.CascadeClassifier(xml_filename)
+    if cascade.empty():
+        st.error(f"Gagal memuat Cascade Classifier dari {xml_filename}.")
         return None
+    return cascade
 
 # Coba muat cascade secara global
 face_cascade = load_face_cascade()
 
 # --- 4. FUNGSI LAYANAN (CUACA & AI) ---
 def get_weather(kota):
+    """Mengambil informasi cuaca dari wttr.in (gratis dan tanpa API key)"""
     try:
         url = f"https://wttr.in/{kota}?format=%t+%C"
         res = requests.get(url, timeout=3).text
@@ -82,7 +91,8 @@ def get_weather(kota):
         return "27 C - Operational"
 
 def talk_to_jarvis(query, api_key):
-    if not api_key:
+    """Menghubungi protokol AI Gemini untuk mendapatkan respon singkat ala JARVIS"""
+    if not api_key or "MASUKKAN" in api_key:
         return "⚠️ Masukkan API Key untuk mengaktifkan AI."
     try:
         client = genai.Client(api_key=api_key)
@@ -114,6 +124,7 @@ if face_cascade is not None and not face_cascade.empty():
         h, w, _ = img.shape
         color_cyan = (255, 255, 0)
         color_red = (0, 0, 255)
+        color_green = (0, 255, 0)
         
         weather_info = get_weather(KOTA)
         now = datetime.now().strftime("%H:%M:%S | %d-%m-%Y")
@@ -125,7 +136,7 @@ if face_cascade is not None and not face_cascade.empty():
         # Text Header HUD
         cv2.putText(img, "HELM VISOR JARVIS - SYSTEM ONLINE", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_cyan, 2)
         cv2.putText(img, f"WAKTU : {now}", (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        cv2.putText(img, f"CUACA : {KOTA} ({weather_info})", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+        cv2.putText(img, f"CUACA : {KOTA} ({weather_info})", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_green, 1)
         
         # Render Boks Deteksi Wajah & Reticle
         if len(faces) == 0:
@@ -149,7 +160,7 @@ if face_cascade is not None and not face_cascade.empty():
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         st.image(img_rgb, caption="Output Visual HUD Visor", use_container_width=True)
 else:
-    st.warning("⚠️ Sistem Deteksi Wajah dinonaktifkan karena file XML tidak ditemukan.")
+    st.error("⚠️ Sistem Deteksi Wajah gagal diaktifkan. Periksa log atau requirements.txt Anda.")
     st.camera_input("Ambil foto (Hanya Cuaca)")
 
 # --- 6. INTEGRASI ASISTEN AI GEMINI ---
@@ -164,8 +175,6 @@ if query:
         with st.spinner("Menghubungi protokol JARVIS..."):
             response = talk_to_jarvis(query, GEMINI_API_KEY)
             if "⚠️" in response:
-                st.error(response)
-            elif "fagal" in response:
                 st.error(response)
             else:
                 st.info(f"🤖 **JARVIS:** {response}")

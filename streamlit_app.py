@@ -1,211 +1,321 @@
-import streamlit as st
-import cv2
-import numpy as np
-from datetime import datetime
-import os
-import requests
-import urllib.request
-from google import genai
-import time
+"""
+H.E.L.M. Visor System - Virtual Helm JARVIS Edition
+===================================================
+Aplikasi Streamlit dengan integrasi OpenCV (AR Overlay Iron Man)
+dan Google Gemini AI untuk asisten berkendara.
+"""
 
-# --- KONFIGURASI HALAMAN STREAMLIT ---
+import os
+import time
+import json
+import urllib.request
+import numpy as np
+import cv2
+import requests
+import streamlit as st
+from google import genai
+from google.genai import types
+
+# --- KONFIGURASI HALAMAN ---
 st.set_page_config(
-    page_title="H.E.L.M. Visor - Autonomous Rider Assistant",
-    layout="wide",
-    page_icon="🪖"
+    page_title="H.E.L.M. Visor System",
+    page_icon="🪖",
+    layout="wide"
 )
 
-# Custom CSS untuk gaya minimalis futuristik
+# Style Futuristik
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {
-        background-color: #111;
-        color: white;
+        background-color: #0d1117;
+        color: #c9d1d9;
     }
     h1, h2, h3 {
-        color: #0ff; /* Cyan */
+        color: #58a6ff;
     }
     .stCameraInput {
-        border: 2px solid #0ff;
-        border-radius: 10px;
-        box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
-    }
-    .stInfo {
-        background-color: rgba(0, 255, 255, 0.1);
-        color: #0ff;
-        border: 1px solid #0ff;
+        border: 2px solid #238636;
+        border-radius: 8px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ H.E.L.M. Visor System")
-st.caption("Heuristic Electronic Location & Monitoring Visor")
+st.title("🪖 H.E.L.M. Visor System")
+st.caption("Heuristic Electronic Location & Monitoring Visor — Powered by JARVIS AI")
 
-# --- INISIALISASI STATE ---
-if "face_cascade" not in st.session_state:
-    st.session_state.face_cascade = None
-
+# --- INISIALISASI SESSION STATE ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+
+if "last_frame" not in st.session_state:
+    st.session_state.last_frame = None
 
 # --- SIDEBAR KONFIGURASI ---
 with st.sidebar:
     st.header("⚙️ System Config")
-    GEMINI_API_KEY = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
-    LOCATION = st.text_input("Current Location", value="Jakarta")
-    st.write("---")
-    st.write("H.E.L.M. Core v1.0 | Status: Online")
-
-# --- FUNGSI CORE ---
-
-# 1. Pemuatan Haar Cascade untuk Deteksi Wajah
-def load_cascade():
-    if st.session_state.face_cascade is not None:
-        return st.session_state.face_cascade
     
+    # Kunci API Gemini
+    api_key_input = st.text_input(
+        "Gemini API Key",
+        type="password",
+        value=os.environ.get("GEMINI_API_KEY", ""),
+        help="Masukkan API Key Gemini Anda"
+    )
+    
+    location_input = st.text_input("Current Location", value="Jakarta")
+    
+    model_name = st.selectbox(
+        "Model Gemini AI",
+        ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        index=0
+    )
+    
+    st.markdown("---")
+    pasang_helm_ar = st.checkbox("🪖 Pasang Helm Iron Man (AR Overlay)", value=True)
+    
+    st.markdown("---")
+    st.write("H.E.L.M. Core v2.0 | Status: **ONLINE**")
+
+
+# --- FUNGSI DETEKSI WAJAH (HAAR CASCADE) ---
+@st.cache_resource
+def load_face_cascade():
+    """Mengunduh dan memuat Haar Cascade Classifier secara aman."""
     xml_filename = "haarcascade_frontalface_default.xml"
     if not os.path.exists(xml_filename):
-        with st.spinner("Downloading H.E.L.M. Visual Database..."):
-            url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
-            try:
-                urllib.request.urlretrieve(url, xml_filename)
-            except Exception as e:
-                st.error(f"Visual Database Sync Failed: {e}")
-                return None
-    
-    # Memastikan modul CV2 memiliki atribut CascadeClassifier
-    # Error libGL.so.1 diperbaiki dengan menggunakan opencv-python-headless di requirements.txt
-    if not hasattr(cv2, 'CascadeClassifier'):
-         st.error("OpenCV module is incomplete. Verify install of opencv-python-headless.")
-         return None
-
-    cascade = cv2.CascadeClassifier(xml_filename)
-    if cascade.empty():
-        st.error(f"Failed to load Visual Database from {xml_filename}.")
-        return None
-        
-    st.session_state.face_cascade = cascade
-    return cascade
-
-face_cascade = load_cascade()
-
-# 2. Pengambilan Data Cuaca (API-less fallback)
-def fetch_weather(location):
-    """Fallback weather check using wttr.in, which requires no API key."""
+        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+        try:
+            urllib.request.urlretrieve(url, xml_filename)
+        except Exception as e:
+            return None, f"Gagal mengunduh cascade: {e}"
+            
     try:
-        url = f"https://wttr.in/{location}?format=%t+%C"
-        response = requests.get(url, timeout=3).text
-        return response.strip()
-    except Exception:
-        return "Operational" # Default status if request fails
+        cascade = cv2.CascadeClassifier(xml_filename)
+        if cascade.empty():
+            return None, "File cascade kosong atau tidak valid."
+        return cascade, None
+    except Exception as e:
+        return None, f"Error memuat OpenCV Cascade: {e}"
 
-# 3. Komunikasi Asisten AI (Gemini)
-def get_rider_asist(query, api_key):
-    """Sends visual/text data to Gemini for analysis."""
+face_cascade, cascade_error = load_face_cascade()
+
+
+# --- FUNGSI MODEL HELM VIRTUAL IRON MAN (AR) ---
+def buat_helm_ironman(lebar: int, tinggi: int) -> np.ndarray:
+    """Menggambar geometri Helm Iron Man futuristik (BGRA) secara prosedural."""
+    kanvas = np.zeros((tinggi, lebar, 4), dtype=np.uint8)
+
+    pusat_x, pusat_y = lebar // 2, int(tinggi * 0.5)
+    sumbu_x, sumbu_y = int(lebar * 0.44), int(tinggi * 0.46)
+
+    # Warna khas Iron Man (BGR + Alpha)
+    warna_merah = (20, 15, 180, 255)       # Red metallic
+    warna_emas = (40, 200, 240, 255)       # Gold faceplate
+    warna_mata = (255, 240, 200, 255)      # Cyan/white glow
+    warna_garis = (10, 10, 100, 255)       # Contour lines
+
+    # 1. Tempurung Luar Helm (Merah)
+    cv2.ellipse(kanvas, (pusat_x, pusat_y), (sumbu_x, sumbu_y), 0, 0, 360, warna_merah, -1)
+
+    # 2. Plat Wajah Depan (Emas/Gold Faceplate)
+    titik_plat_emas = np.array([
+        [pusat_x - int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
+        [pusat_x + int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
+        [pusat_x + int(sumbu_x * 0.75), pusat_y - int(sumbu_y * 0.10)],
+        [pusat_x + int(sumbu_x * 0.55), pusat_y + int(sumbu_y * 0.45)],
+        [pusat_x + int(sumbu_x * 0.35), pusat_y + int(sumbu_y * 0.85)],
+        [pusat_x - int(sumbu_x * 0.35), pusat_y + int(sumbu_y * 0.85)],
+        [pusat_x - int(sumbu_x * 0.55), pusat_y + int(sumbu_y * 0.45)],
+        [pusat_x - int(sumbu_x * 0.75), pusat_y - int(sumbu_y * 0.10)],
+    ], dtype=np.int32)
+    cv2.fillPoly(kanvas, [titik_plat_emas], warna_emas)
+
+    # 3. Slot Mata menyala (Glowing LED)
+    tinggi_mata = int(sumbu_y * 0.08)
+    pos_y_mata = pusat_y - int(sumbu_y * 0.20)
+
+    mata_kiri = np.array([
+        [pusat_x - int(sumbu_x * 0.60), pos_y_mata],
+        [pusat_x - int(sumbu_x * 0.15), pos_y_mata + int(tinggi_mata * 0.4)],
+        [pusat_x - int(sumbu_x * 0.20), pos_y_mata + tinggi_mata],
+        [pusat_x - int(sumbu_x * 0.55), pos_y_mata + int(tinggi_mata * 0.7)],
+    ], dtype=np.int32)
+    
+    mata_kanan = np.array([
+        [pusat_x + int(sumbu_x * 0.15), pos_y_mata + int(tinggi_mata * 0.4)],
+        [pusat_x + int(sumbu_x * 0.60), pos_y_mata],
+        [pusat_x + int(sumbu_x * 0.55), pos_y_mata + int(tinggi_mata * 0.7)],
+        [pusat_x + int(sumbu_x * 0.20), pos_y_mata + tinggi_mata],
+    ], dtype=np.int32)
+
+    cv2.fillPoly(kanvas, [mata_kiri], warna_mata)
+    cv2.fillPoly(kanvas, [mata_kanan], warna_mata)
+
+    # 4. Garis Panel & Detail Mulut
+    cv2.polylines(kanvas, [titik_plat_emas], isClosed=True, color=warna_garis, thickness=max(2, lebar // 100))
+    y_mulut = pusat_y + int(sumbu_y * 0.55)
+    cv2.line(kanvas, (pusat_x - int(sumbu_x * 0.30), y_mulut), (pusat_x + int(sumbu_x * 0.30), y_mulut), warna_garis, thickness=max(2, lebar // 90))
+
+    # Blur halus untuk transparansi tepi
+    alpha = kanvas[:, :, 3].astype(np.float32) / 255.0
+    alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
+    kanvas[:, :, 3] = (alpha * 255).astype(np.uint8)
+
+    return kanvas
+
+
+def tempel_overlay(frame_bgr, overlay_bgra, x, y):
+    """Penggabungan Alpha Blending gambar BGRA di atas BGR."""
+    h_ov, w_ov = overlay_bgra.shape[:2]
+    h_f, w_f = frame_bgr.shape[:2]
+
+    x1, y1 = max(x, 0), max(y, 0)
+    x2, y2 = min(x + w_ov, w_f), min(y + h_ov, h_f)
+    if x1 >= x2 or y1 >= y2:
+        return frame_bgr
+
+    ov_x1, ov_y1 = x1 - x, y1 - y
+    ov_x2, ov_y2 = ov_x1 + (x2 - x1), ov_y1 + (y2 - y1)
+
+    bagian_overlay = overlay_bgra[ov_y1:ov_y2, ov_x1:ov_x2]
+    alpha = bagian_overlay[:, :, 3:4].astype(np.float32) / 255.0
+    warna_ov = bagian_overlay[:, :, :3].astype(np.float32)
+
+    roi = frame_bgr[y1:y2, x1:x2].astype(np.float32)
+    hasil = warna_ov * alpha + roi * (1 - alpha)
+    frame_bgr[y1:y2, x1:x2] = hasil.astype(np.uint8)
+    return frame_bgr
+
+
+def render_visor_hud(frame_bgr, face_cascade_obj, aktifkan_ar=True):
+    """Memproses frame dengan Deteksi Wajah, Overlay Helm, dan Indikator HUD."""
+    h, w, _ = frame_bgr.shape
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    
+    hasil = frame_bgr.copy()
+    
+    # Deteksi Wajah
+    wajah_terdeteksi = []
+    if face_cascade_obj is not None:
+        wajah_terdeteksi = face_cascade_obj.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+
+    for (fx, fy, fw, fh) in wajah_terdeteksi:
+        if aktifkan_ar:
+            # Pemasangan Helm Iron Man
+            lebar_helm = int(fw * 1.6)
+            tinggi_helm = int(fh * 1.9)
+            helm = buat_helm_ironman(lebar_helm, tinggi_helm)
+
+            pos_x = fx - int((lebar_helm - fw) / 2)
+            pos_y = fy - int(tinggi_helm * 0.25)
+            hasil = tempel_overlay(hasil, helm, pos_x, pos_y)
+        
+        # Bounding Box HUD Visual Target
+        cv2.rectangle(hasil, (fx, fy), (fx + fw, fy + fh), (255, 255, 0), 2)
+        cv2.putText(hasil, "TARGET: RIDER", (fx, fy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+    # Top HUD Bar
+    cv2.rectangle(hasil, (10, 10), (w - 10, 50), (15, 15, 15), -1)
+    cv2.rectangle(hasil, (10, 10), (w - 10, 50), (255, 255, 0), 1)
+    waktu_str = time.strftime("%H:%M:%S")
+    cv2.putText(hasil, f"H.E.L.M. HUD | TIME: {waktu_str} | LOC: {location_input.upper()}", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+    return hasil
+
+
+# --- INTEGRASI GEMINI AI ---
+def analisis_visor_ai(api_key, frame_bgr, prompt_user, model):
+    """Mengirim gambar frame visor dan pertanyaan ke AI Gemini."""
     if not api_key:
-        return "⚠️ H.E.L.M. Core AI Offline: Gemini API Key missing."
+        return "⚠️ Kunci API Gemini belum diisi di menu sidebar."
+    
     try:
         client = genai.Client(api_key=api_key)
-        # Prompt singkat agar respon cepat
-        prompt = (
-            "Response as H.E.L.M., a practical and focused rider assistant AI inside a helmet visor. "
-            "Keep the response in Indonesian, very brief, clear, and centered on rider safety or info. "
-            f"Question: {query}"
+        
+        # Encode frame BGR ke JPEG bytes
+        _, buffer = cv2.imencode('.jpg', frame_bgr)
+        image_bytes = buffer.tobytes()
+        
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+        
+        system_prompt = (
+            "Kamu adalah JARVIS, AI asisten di dalam helm pengemudi (H.E.L.M. Visor). "
+            "Jawab singkat, presisi, ringkas, dan utamakan keselamatan jalan dalam Bahasa Indonesia.\n"
+            f"Pertanyaan Pengendara: {prompt_user if prompt_user else 'Analisis bahaya jalan di depan.'}"
         )
-        response = client.models.generate_content(
-            model='gemini-2.0-flash-exp', # Menggunakan flash untuk kecepatan
-            contents=prompt
+        
+        res = client.models.generate_content(
+            model=model,
+            contents=[system_prompt, image_part]
         )
-        return response.text.strip()
+        return res.text
     except Exception as e:
-        return f"Protokol komunikasi AI terganggu: {e}"
+        return f"Gagal menghubungkan ke H.E.L.M. Core AI: {e}"
 
-# --- MAIN INTERFACE: KAMERA & HUD ---
-st.subheader("📷 Visor Output")
 
-if face_cascade is not None:
-    # Kamera Input
-    camera_image = st.camera_input("Rider Safety Scan (Tap to Analyze)")
+# --- LAYOUT ANTARMUKA UTAMA ---
+col_kamera, col_chat = st.columns([1.1, 0.9])
 
-    if camera_image:
-        # Konversi data input ke format OpenCV
-        image_bytes = camera_image.getvalue()
-        img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-        
-        # Proses deteksi wajah (targeting)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
-        
-        # --- RENDER HUD OVERLAY (OpenCV) ---
-        h, w, _ = img.shape
-        weather_info = fetch_weather(LOCATION)
-        now_time = datetime.now().strftime("%H:%M:%S")
-        now_date = datetime.now().strftime("%d/%m/%Y")
-        
-        color_cyan = (255, 255, 0) # OpenCV uses BGR
-        color_red = (0, 0, 255)
-        color_green = (0, 255, 0)
-        
-        # 1. Header Box & Status
-        cv2.rectangle(img, (10, 10), (w - 10, 85), (20, 20, 20), -1) # Dark fill
-        cv2.rectangle(img, (10, 10), (w - 10, 85), color_cyan, 1) # Cyan border
-        
-        cv2.putText(img, "H.E.L.M. VISOR - ACTIVE", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_cyan, 2)
-        cv2.putText(img, f"TIME: {now_time}", (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        cv2.putText(img, f"LOC: {LOCATION} ({weather_info})", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_green, 1)
-        
-        # 2. Targeting Wajah
-        if len(faces) == 0:
-            cv2.putText(img, "NO RIDER DETECTED", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_red, 1)
-        
-        for (x, y, fw, fh) in faces:
-            # Kotak target
-            cv2.rectangle(img, (x, y), (x + fw, y + fh), color_cyan, 2)
-            
-            # Crosshair tengah
-            cx, cy = x + fw // 2, y + fh // 2
-            cv2.line(img, (cx - 15, cy), (cx + 15, cy), color_red, 2)
-            cv2.line(img, (cx, cy - 15), (cx, cy + 15), color_red, 2)
-            
-            # Label
-            cv2.putText(img, "TARGET: RIDER", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_cyan, 1)
-            cv2.putText(img, "SCANNING OK", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_green, 1)
-
-        # 3. Render Output ke Streamlit (RGB conversion)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        st.image(img_rgb, caption=f"H.E.L.M. Scan at {now_time}", use_container_width=True)
-
-else:
-    st.error("⚠️ Visual Database not initialized. Scan function offline.")
-
-# --- INTERFACE CHAT: RIDER COMMUNICATION ---
-st.write("---")
-st.subheader("🗣️ Rider Comms (H.E.L.M. Core)")
-
-# Container untuk history chat
-chat_container = st.container()
-
-with chat_container:
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-# Input untuk rider
-rider_query = st.chat_input("H.E.L.M., any safety issues ahead?")
-
-if rider_query:
-    # 1. Simpan history user
-    st.session_state.chat_history.append({"role": "user", "content": rider_query})
-    with st.chat_message("user"):
-        st.markdown(rider_query)
+with col_kamera:
+    st.subheader("📷 Visor Output")
     
-    # 2. Proses AI Assistant
-    with st.spinner("Analyzing Comms Protocol..."):
-        ai_response = get_rider_asist(rider_query, GEMINI_API_KEY)
-        # Menambahkan delay sedikit agar seperti berpikir
-        time.sleep(0.5)
+    if cascade_error:
+        st.warning(f"⚠️ Warning Sistem Visual: {cascade_error}")
+        
+    camera_input = st.camera_input("Ambil gambar snapshot visor")
+    
+    if camera_input:
+        bytes_data = camera_input.getvalue()
+        np_arr = np.frombuffer(bytes_data, np.uint8)
+        frame_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        
+        # Simpan frame asli ke session
+        st.session_state.last_frame = frame_bgr
+        
+        # Render dengan Overlay AR
+        frame_hud = render_visor_hud(frame_bgr, face_cascade, aktifkan_ar=pasang_helm_ar)
+        
+        # Tampilkan di Streamlit (Ubah BGR ke RGB)
+        st.image(cv2.cvtColor(frame_hud, cv2.COLOR_BGR2RGB), caption="Visor HUD Stream", use_container_width=True)
+    else:
+        st.info("Kamera siap. Silahkan ambil gambar untuk memulai pemindaian HUD.")
 
-    # 3. Simpan dan tampilkan history AI
-    st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
-    with st.chat_message("assistant"):
-        st.markdown(ai_response)
+with col_chat:
+    st.subheader("🗣️ Rider Comms (H.E.L.M. Core)")
+    
+    # Tampilan Riwayat Chat
+    chat_box = st.container(height=380)
+    with chat_box:
+        for chat in st.session_state.chat_history:
+            role = chat["role"]
+            avatar = "🪖" if role == "assistant" else None
+            with st.chat_message(role, avatar=avatar):
+                st.write(chat["content"])
+
+    # Input Teks Pertanyaan
+    user_query = st.chat_input("H.E.L.M., ada bahaya di depan?")
+    
+    if user_query:
+        # Tampilkan input user
+        st.session_state.chat_history.append({"role": "user", "content": user_query})
+        
+        with st.spinner("JARVIS menganalisis input..."):
+            if st.session_state.last_frame is not None:
+                jawaban_ai = analisis_visor_ai(api_key_input, st.session_state.last_frame, user_query, model_name)
+            else:
+                # Fallback tanya jawab tanpa gambar jika belum ambil snapshot
+                if api_key_input:
+                    try:
+                        c = genai.Client(api_key=api_key_input)
+                        resp = c.models.generate_content(
+                            model=model_name,
+                            contents=f"Kamu adalah JARVIS asisten helm. Jawab singkat: {user_query}"
+                        )
+                        jawaban_ai = resp.text
+                    except Exception as err:
+                        jawaban_ai = f"Error: {err}"
+                else:
+                    jawaban_ai = "⚠️ Masukkan API Key Gemini di sidebar untuk berkomunikasi."
+        
+        st.session_state.chat_history.append({"role": "assistant", "content": jawaban_ai})
+        st.rerun()

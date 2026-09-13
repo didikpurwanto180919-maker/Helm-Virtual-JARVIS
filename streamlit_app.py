@@ -42,10 +42,10 @@ with st.sidebar:
         type="password",
         value=os.environ.get("GEMINI_API_KEY", "")
     )
-    # PERBAIKAN: Gunakan gemini-2.5-flash sebagai pilihan utama
+    # PERBAIKAN: Gunakan gemini-3.6-flash sebagai pilihan default
     model_name = st.selectbox(
         "Model Gemini AI",
-        ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+        ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
         index=0
     )
     

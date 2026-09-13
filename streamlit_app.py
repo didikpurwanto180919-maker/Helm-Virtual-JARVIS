@@ -1,8 +1,7 @@
 """
-H.E.L.M. Visor System - Virtual Helm AR Edition
-===================================================
-Aplikasi Streamlit untuk memasang Helm Virtual pada foto/kamera
-dan menganalisis tampilan menggunakan Google Gemini AI.
+H.E.L.M. Visor System - Fixing Virtual Helmet Overlay
+=====================================================
+Aplikasi Streamlit untuk memasang Helm Virtual pada foto/kamera secara otomatis.
 """
 
 import os
@@ -38,10 +37,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🪖 H.E.L.M. Visor - Fitur Pasang Helm AR")
-st.caption("Deteksi Wajah Otomatis & Penempelan Helm Virtual Futuristik")
+st.title("🪖 H.E.L.M. Visor System - Virtual Helmet AR")
+st.caption("Auto-Detect Face & Fit Virtual Helmet Overlay")
 
-# --- INISIALISASI SESSION STATE ---
+# --- SESSION STATE ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -67,13 +66,13 @@ with st.sidebar:
     
     st.markdown("---")
     mode_input = st.radio("Sumber Foto:", ["Ambil Foto (Kamera)", "Upload Foto dari Perangkat"])
-    pasang_helm_ar = st.checkbox("🪖 Aktifkan Helm Virtual", value=True)
+    pasang_helm_ar = st.checkbox("🪖 Paksa Tampil Helm Virtual", value=True)
     
     st.markdown("---")
-    st.write("H.E.L.M. AR Core v2.5 | Status: **ONLINE**")
+    st.write("H.E.L.M. Core v3.0 | Status: **ONLINE**")
 
 
-# --- DETEKSI WAJAH (HAAR CASCADE) ---
+# --- DOWLOAD & LOAD HAAR CASCADE ---
 @st.cache_resource
 def load_face_cascade():
     xml_filename = "haarcascade_frontalface_default.xml"
@@ -87,31 +86,32 @@ def load_face_cascade():
     try:
         cascade = cv2.CascadeClassifier(xml_filename)
         if cascade.empty():
-            return None, "File cascade tidak valid."
+            return None, "File cascade kosong."
         return cascade, None
     except Exception as e:
-        return None, f"Error memuat OpenCV Cascade: {e}"
+        return None, f"Error memuat Cascade: {e}"
 
 face_cascade, cascade_error = load_face_cascade()
 
 
-# --- FUNGSI MENGGAMBAR HELM VIRTUAL (BGRA) ---
+# --- FUNGSI MENGGAMBAR HELM IRON MAN (BGRA) ---
 def buat_helm_ironman(lebar: int, tinggi: int) -> np.ndarray:
-    """Menggambar Helm Virtual Futuristik warna Merah & Emas dengan Transparansi."""
+    """Menggambar Geometri Helm Iron Man dengan alpha channel transparansi."""
     kanvas = np.zeros((tinggi, lebar, 4), dtype=np.uint8)
 
-    pusat_x, pusat_y = lebar // 2, int(tinggi * 0.5)
-    sumbu_x, sumbu_y = int(lebar * 0.44), int(tinggi * 0.46)
+    pusat_x, pusat_y = lebar // 2, int(tinggi * 0.48)
+    sumbu_x, sumbu_y = int(lebar * 0.45), int(tinggi * 0.45)
 
-    warna_merah = (20, 15, 180, 255)       # Red Metallic (BGR)
-    warna_emas = (40, 200, 240, 255)       # Gold Faceplate
-    warna_mata = (255, 240, 200, 255)      # Cyan Glow
-    warna_garis = (10, 10, 100, 255)       # Contour lines
+    # Warna BGR + Alpha
+    warna_merah = (20, 15, 180, 255)
+    warna_emas = (40, 200, 240, 255)
+    warna_mata = (255, 240, 200, 255)
+    warna_garis = (10, 10, 100, 255)
 
-    # 1. Tempurung Helm (Merah)
+    # 1. Tempurung Luar Merah
     cv2.ellipse(kanvas, (pusat_x, pusat_y), (sumbu_x, sumbu_y), 0, 0, 360, warna_merah, -1)
 
-    # 2. Topeng Depan (Emas)
+    # 2. Plat Topeng Emas
     titik_plat_emas = np.array([
         [pusat_x - int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
         [pusat_x + int(sumbu_x * 0.65), pusat_y - int(sumbu_y * 0.60)],
@@ -145,26 +145,22 @@ def buat_helm_ironman(lebar: int, tinggi: int) -> np.ndarray:
     cv2.fillPoly(kanvas, [mata_kiri], warna_mata)
     cv2.fillPoly(kanvas, [mata_kanan], warna_mata)
 
-    # 4. Garis Panel & Detail Mulut
-    cv2.polylines(kanvas, [titik_plat_emas], isClosed=True, color=warna_garis, thickness=max(2, lebar // 100))
+    # 4. Garis Kontur & Garis Mulut
+    cv2.polylines(kanvas, [titik_plat_emas], isClosed=True, color=warna_garis, thickness=max(2, lebar // 90))
     y_mulut = pusat_y + int(sumbu_y * 0.55)
-    cv2.line(kanvas, (pusat_x - int(sumbu_x * 0.30), y_mulut), (pusat_x + int(sumbu_x * 0.30), y_mulut), warna_garis, thickness=max(2, lebar // 90))
-
-    # Alpha Blur untuk Efek Halus
-    alpha = kanvas[:, :, 3].astype(np.float32) / 255.0
-    alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
-    kanvas[:, :, 3] = (alpha * 255).astype(np.uint8)
+    cv2.line(kanvas, (pusat_x - int(sumbu_x * 0.30), y_mulut), (pusat_x + int(sumbu_x * 0.30), y_mulut), warna_garis, thickness=max(2, lebar // 80))
 
     return kanvas
 
 
 def tempel_overlay(frame_bgr, overlay_bgra, x, y):
-    """Menempelkan gambar ber-alpha transparansi ke atas foto utama."""
+    """Menempelkan gambar BGRA di atas gambar BGR menggunakan Alpha Blending."""
     h_ov, w_ov = overlay_bgra.shape[:2]
     h_f, w_f = frame_bgr.shape[:2]
 
     x1, y1 = max(x, 0), max(y, 0)
     x2, y2 = min(x + w_ov, w_f), min(y + h_ov, h_f)
+    
     if x1 >= x2 or y1 >= y2:
         return frame_bgr
 
@@ -176,50 +172,68 @@ def tempel_overlay(frame_bgr, overlay_bgra, x, y):
     warna_ov = bagian_overlay[:, :, :3].astype(np.float32)
 
     roi = frame_bgr[y1:y2, x1:x2].astype(np.float32)
-    hasil = warna_ov * alpha + roi * (1 - alpha)
+    hasil = warna_ov * alpha + roi * (1.0 - alpha)
     frame_bgr[y1:y2, x1:x2] = hasil.astype(np.uint8)
     return frame_bgr
 
 
-def pasang_helm_ke_foto(frame_bgr, face_cascade_obj):
-    """Mendeteksi posisi kepala di foto dan menempelkan Helm secara presisi."""
+def tempel_helm_otomatis(frame_bgr, face_cascade_obj):
+    """Mendeteksi wajah dan menempelkan helm. Jika tidak terdeteksi, helm tetap ditempel di tengah."""
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     hasil = frame_bgr.copy()
+    h_frame, w_frame = frame_bgr.shape[:2]
     
     wajah_terdeteksi = []
     if face_cascade_obj is not None:
-        wajah_terdeteksi = face_cascade_obj.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+        # Parameter dibuat lebih sensitif agar wajah lebih mudah terdeteksi
+        wajah_terdeteksi = face_cascade_obj.detectMultiScale(
+            gray, 
+            scaleFactor=1.05, 
+            minNeighbors=3, 
+            minSize=(30, 30)
+        )
 
-    for (fx, fy, fw, fh) in wajah_terdeteksi:
-        # Menyesuaikan ukuran & posisi helm agar pas menutup kepala
-        lebar_helm = int(fw * 1.65)
-        tinggi_helm = int(fh * 1.95)
+    if len(wajah_terdeteksi) > 0:
+        for (fx, fy, fw, fh) in wajah_terdeteksi:
+            lebar_helm = int(fw * 1.8)
+            tinggi_helm = int(fh * 2.1)
+            helm = buat_helm_ironman(lebar_helm, tinggi_helm)
+
+            pos_x = fx - int((lebar_helm - fw) / 2)
+            pos_y = fy - int(tinggi_helm * 0.32)
+            
+            hasil = tempel_overlay(hasil, helm, pos_x, pos_y)
+        status_msg = f"✅ Helm terdeteksi dan terpasang pada {len(wajah_terdeteksi)} wajah!"
+    else:
+        # Fallback: Jika wajah gagal terdeteksi, helm tetap ditempel di tengah foto
+        lebar_helm = int(w_frame * 0.5)
+        tinggi_helm = int(h_frame * 0.6)
         helm = buat_helm_ironman(lebar_helm, tinggi_helm)
 
-        pos_x = fx - int((lebar_helm - fw) / 2)
-        pos_y = fy - int(tinggi_helm * 0.28)
-        
+        pos_x = (w_frame - lebar_helm) // 2
+        pos_y = (h_frame - tinggi_helm) // 2
         hasil = tempel_overlay(hasil, helm, pos_x, pos_y)
+        status_msg = "ℹ️ Wajah tidak terdeteksi otomatis. Helm ditayangkan di posisi tengah (Fallback Mode)."
 
-    return hasil, len(wajah_terdeteksi)
+    return hasil, status_msg
 
 
 # --- LAYOUT DUA KOLOM ---
 col_kamera, col_chat = st.columns([1.1, 0.9])
 
 with col_kamera:
-    st.subheader("📷 Tampilan Foto Berhelm")
+    st.subheader("📷 Visual Output")
     
     frame_bgr = None
     
     if mode_input == "Ambil Foto (Kamera)":
-        camera_input = st.camera_input("Ambil snapshot wajah")
+        camera_input = st.camera_input("Ambil snapshot foto")
         if camera_input:
             bytes_data = camera_input.getvalue()
             np_arr = np.frombuffer(bytes_data, np.uint8)
             frame_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     else:
-        uploaded_file = st.file_uploader("Pilih file foto (JPG/PNG)", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader("Upload Foto (JPG/PNG)", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             bytes_data = uploaded_file.getvalue()
             np_arr = np.frombuffer(bytes_data, np.uint8)
@@ -229,18 +243,15 @@ with col_kamera:
         st.session_state.last_frame = frame_bgr
         
         if pasang_helm_ar:
-            frame_hasil, jumlah_wajah = pasang_helm_ke_foto(frame_bgr, face_cascade)
-            if jumlah_wajah > 0:
-                st.success(f"✅ Helm Virtual berhasil dipasang pada {jumlah_wajah} wajah!")
-            else:
-                st.warning("⚠️ Wajah tidak terdeteksi. Pastikan foto wajah terlihat jelas dan menghadap ke depan.")
+            frame_hasil, status_msg = tempel_helm_otomatis(frame_bgr, face_cascade)
+            st.info(status_msg)
         else:
             frame_hasil = frame_bgr
 
         # Tampilkan Foto Hasil
-        st.image(cv2.cvtColor(frame_hasil, cv2.COLOR_BGR2RGB), caption="Hasil Penempelan Helm Virtual", use_container_width=True)
+        st.image(cv2.cvtColor(frame_hasil, cv2.COLOR_BGR2RGB), caption="Hasil Helm Virtual Overlay", use_container_width=True)
     else:
-        st.info("Silakan ambil foto lewat kamera atau upload foto untuk melihat tampilan berhelm.")
+        st.info("Silakan ambil foto lewat kamera atau unggah foto untuk melihat tampilan helm.")
 
 with col_chat:
     st.subheader("💬 Tanya JARVIS AI")
@@ -253,7 +264,7 @@ with col_chat:
             with st.chat_message(role, avatar=avatar):
                 st.write(chat["content"])
 
-    user_query = st.chat_input("Tanya JARVIS tentang foto di sebelah...")
+    user_query = st.chat_input("Tanya JARVIS tentang foto ini...")
     
     if user_query:
         st.session_state.chat_history.append({"role": "user", "content": user_query})
@@ -265,13 +276,13 @@ with col_chat:
                     _, buffer = cv2.imencode('.jpg', st.session_state.last_frame)
                     image_part = types.Part.from_bytes(data=buffer.tobytes(), mime_type="image/jpeg")
                     
-                    prompt = f"Kamu adalah JARVIS asisten virtual. Jawab pertanyaan singkat dalam Bahasa Indonesia: {user_query}"
+                    prompt = f"Kamu adalah JARVIS. Jawab singkat dalam Bahasa Indonesia: {user_query}"
                     res = client.models.generate_content(model=model_name, contents=[prompt, image_part])
                     jawaban_ai = res.text
                 except Exception as e:
                     jawaban_ai = f"Error: {e}"
             else:
-                jawaban_ai = "⚠️ Masukkan API Key Gemini di sidebar dan sediakan foto terlebih dahulu."
+                jawaban_ai = "⚠️ Masukkan API Key Gemini di sidebar dan ambil/upload foto terlebih dahulu."
         
         st.session_state.chat_history.append({"role": "assistant", "content": jawaban_ai})
         st.rerun()

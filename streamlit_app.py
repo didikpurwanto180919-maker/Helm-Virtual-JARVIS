@@ -43,7 +43,7 @@ with st.sidebar:
     )
     model_name = st.selectbox(
         "Model Gemini AI",
-        ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
         index=0
     )
     
@@ -60,7 +60,7 @@ with st.sidebar:
     offset_y = st.slider("Geser Atas / Bawah (Y)", -300, 300, -20, step=5)
     skala_helm = st.slider("Skala Ukuran Helm", 0.5, 3.0, 1.2, step=0.1)
 
-# --- LOAD HAAR CASCADE ---
+# --- LOAD HAAR CASCADE STABIL ---
 @st.cache_resource
 def load_cascade():
     xml_filename = "haarcascade_frontalface_alt.xml"
@@ -203,7 +203,7 @@ with col_chat:
             try:
                 client = genai.Client(api_key=api_key_input)
                 
-                # Tambahkan instruksi gaya bicara JARVIS
+                # Persona JARVIS
                 system_prompt = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan siap membantu."
                 full_prompt = f"{system_prompt}\n\nPertanyaan User: {user_query}"
                 

@@ -7,6 +7,7 @@ import numpy as np
 import streamlit as st
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from gtts import gTTS
 from streamlit_mic_recorder import mic_recorder
 
@@ -42,7 +43,6 @@ with st.sidebar:
         type="password",
         value=os.environ.get("GEMINI_API_KEY", "")
     )
-    # PERBAIKAN: Gunakan gemini-3.6-flash sebagai pilihan default
     model_name = st.selectbox(
         "Model Gemini AI",
         ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
@@ -255,6 +255,11 @@ with col_chat:
 
                 st.session_state.messages.append({"role": "assistant", "content": jawaban})
 
+            except APIError as e:
+                if e.code == 429:
+                    st.warning("⚠️ **Limit Kuota Terlampaui (429):** Silakan tunggu 1 menit sebelum mengirim pesan lagi, atau gunakan API Key dengan paket Billing aktif.")
+                else:
+                    st.error(f"Error API ({e.code}): {e.message}")
             except Exception as e:
                 st.error(f"Error AI: {e}")
         else:

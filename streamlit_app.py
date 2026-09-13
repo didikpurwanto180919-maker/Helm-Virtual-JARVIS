@@ -5,6 +5,7 @@ import urllib.request
 import cv2
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from gtts import gTTS
 
@@ -14,7 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- FUNGSI HELPER UNTUK MEMUTAR AUDIO OTOMATIS ---
+# --- FUNGSI HELPER TTS (JARVIS BERBICARA) ---
 def putar_audio_gtts(teks, lang='id'):
     try:
         tts = gTTS(text=teks, lang=lang, slow=False)
@@ -23,7 +24,6 @@ def putar_audio_gtts(teks, lang='id'):
         fp.seek(0)
         audio_bytes = fp.read()
         b64 = base64.b64encode(audio_bytes).decode()
-        # Embed HTML5 Audio dengan Autoplay
         md = f"""
             <audio autoplay style="display:none;">
             <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
@@ -183,17 +183,69 @@ with col_kamera:
 with col_chat:
     st.subheader("💬 JARVIS Voice Assistant")
     
-    # Inisialisasi Riwayat Chat
+    # --- WIDGET SPEECH RECOGNITION (INPUT MIKROFON) ---
+    st.markdown("##### 🎙️ Bicara ke JARVIS:")
+    st_lang = "id-ID" if lang_code == "id" else "en-US"
+    
+    components.html(f"""
+        <button id="micBtn" style="
+            background-color: #ff4b4b; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            font-size: 16px; 
+            border-radius: 8px; 
+            cursor: pointer;
+            width: 100%;">
+            🔴 Klik & Bicara Sekarang
+        </button>
+        <p id="statusText" style="font-size: 12px; color: gray; margin-top: 5px;"></p>
+
+        <script>
+            const btn = document.getElementById('micBtn');
+            const status = document.getElementById('statusText');
+            
+            if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                const recognition = new SpeechRecognition();
+                recognition.lang = '{st_lang}';
+                recognition.interimResults = false;
+
+                btn.onclick = () => {{
+                    recognition.start();
+                    status.innerText = "Mendengarkan suara Anda...";
+                    btn.style.backgroundColor = "#ff8800";
+                }};
+
+                recognition.onresult = (event) => {{
+                    const text = event.results[0][0].transcript;
+                    status.innerText = "Terdeteksi: " + text;
+                    btn.style.backgroundColor = "#ff4b4b";
+                    
+                    // Salin hasil teks ke clipboard agar mudah dimasukkan ke input
+                    navigator.clipboard.writeText(text);
+                    alert("Suara terdeteksi: '" + text + "'\\n\\nTeks telah disalin! Tempel (Ctrl+V) pada kolom chat di bawah.");
+                }};
+
+                recognition.onerror = (event) => {{
+                    status.innerText = "Error: " + event.error;
+                    btn.style.backgroundColor = "#ff4b4b";
+                }};
+            }} else {{
+                status.innerText = "Browser Anda belum mendukung Speech Recognition.";
+            }}
+        </script>
+    """, height=110)
+
+    # Inisialisasi Chat History
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Tampilkan Riwayat Chat
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Input Chat Utama
-    user_query = st.chat_input("Tanya JARVIS...")
+    user_query = st.chat_input("Tanya JARVIS (atau paste hasil rekaman)...")
     if user_query:
         st.session_state.messages.append({"role": "user", "content": user_query})
         with st.chat_message("user"):
@@ -202,8 +254,6 @@ with col_chat:
         if api_key_input:
             try:
                 client = genai.Client(api_key=api_key_input)
-                
-                # Persona JARVIS
                 system_prompt = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan siap membantu."
                 full_prompt = f"{system_prompt}\n\nPertanyaan User: {user_query}"
                 

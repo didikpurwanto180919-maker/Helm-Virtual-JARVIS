@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import base64
 import urllib.request
 import cv2
@@ -39,14 +40,22 @@ def putar_audio_gtts(teks, lang='id'):
 with st.sidebar:
     st.header("⚙️ Pengaturan System")
     api_key_input = st.text_input(
-        "Gemini API Key",
+        "Gemini API Key Utama",
         type="password",
         value=os.environ.get("GEMINI_API_KEY", "")
     )
+    api_key_backup = st.text_input(
+        "Gemini API Key Cadangan (Opsional)",
+        type="password",
+        help="Gunakan API Key dari akun Google lain jika key utama kehabisan kuota."
+    )
+    
+    # PERBAIKAN: Default ke gemini-1.5-flash untuk kuota gratis yang jauh lebih besar
     model_name = st.selectbox(
         "Model Gemini AI",
-        ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
-        index=0
+        ["gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash", "gemini-3.6-flash"],
+        index=0,
+        help="Pilih gemini-1.5-flash untuk batas kuota gratis terbanyak."
     )
     
     st.markdown("---")
@@ -145,6 +154,36 @@ def tempel_overlay(frame, overlay, x, y):
     frame[y1:y2, x1:x2] = (warna * alpha + roi * (1.0 - alpha)).astype(np.uint8)
     return frame
 
+# --- FUNGSI AI DENGAN RETRY OTOMATIS & BACKUP KEY ---
+def panggil_gemini_api(api_key, backup_key, selected_model, contents, config):
+    keys_to_try = [k for k in [api_key, backup_key] if k]
+    
+    for key in keys_to_try:
+        client = genai.Client(api_key=key)
+        # Mencoba hingga 3 kali jika ada rate limit sementara
+        for attempt in range(3):
+            try:
+                res = client.models.generate_content(
+                    model=selected_model,
+                    contents=contents,
+                    config=config
+                )
+                return res.text
+            except APIError as e:
+                if e.code == 429:
+                    if attempt < 2:
+                        time.sleep(3) # Tunggu 3 detik lalu coba lagi
+                        continue
+                    # Jika sudah 3x mencoba pada key ini, lanjut ke key cadangan (jika ada)
+                    break
+                else:
+                    raise e
+            except Exception as e:
+                raise e
+                
+    raise APIError(429, {"message": "Batas kuota gratis (429) tercapai di semua API Key. Harap tunggu 1 menit atau ganti model ke gemini-1.5-flash di sidebar."})
+
+# --- LAYOUT UTAMA STREMLIT ---
 st.title("🪖 H.E.L.M. Visor System - Virtual Overlay")
 
 col_kamera, col_chat = st.columns([1.1, 0.9])
@@ -210,7 +249,6 @@ with col_chat:
     if user_query:
         if api_key_input:
             try:
-                client = genai.Client(api_key=api_key_input)
                 system_instruction = "Kamu adalah JARVIS, asisten AI Iron Man yang sangat sopan, cerdas, efisien, dan selalu menjawab secara singkat dan langsung dalam bahasa yang sama dengan input pengguna."
 
                 with st.chat_message("user"):
@@ -234,19 +272,18 @@ with col_chat:
                         data=audio_record["bytes"],
                         mime_type="audio/wav"
                     )
-                    res = client.models.generate_content(
-                        model=model_name,
-                        contents=[audio_part],
-                        config=config
-                    )
+                    contents = [audio_part]
                 else:
-                    res = client.models.generate_content(
-                        model=model_name,
-                        contents=user_query,
+                    contents = user_query
+
+                with st.spinner("JARVIS sedang memproses..."):
+                    jawaban = panggil_gemini_api(
+                        api_key=api_key_input,
+                        backup_key=api_key_backup,
+                        selected_model=model_name,
+                        contents=contents,
                         config=config
                     )
-
-                jawaban = res.text
 
                 with st.chat_message("assistant"):
                     st.markdown(jawaban)
@@ -257,7 +294,7 @@ with col_chat:
 
             except APIError as e:
                 if e.code == 429:
-                    st.warning("⚠️ **Limit Kuota Terlampaui (429):** Silakan tunggu 1 menit sebelum mengirim pesan lagi, atau gunakan API Key dengan paket Billing aktif.")
+                    st.warning("⚠️ **Limit Kuota Terlampaui (429):** Pilih model **gemini-1.5-flash** di sidebar atau tunggu 1 menit.")
                 else:
                     st.error(f"Error API ({e.code}): {e.message}")
             except Exception as e:
